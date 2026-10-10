@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from './auth/AuthProvider'
+import { ThemeToggle } from './lib/ThemeToggle'
+import { canAccess, modules } from './lib/roles'
 import { DashboardPage } from './pages/DashboardPage'
 import { InventoryPage } from './pages/InventoryPage'
 import { LoginPage } from './pages/LoginPage'
@@ -12,39 +14,150 @@ export default function App() {
   if (loading) return <main className="screen-message">Cargando sesión…</main>
   if (!user) return <LoginPage />
 
+  const allowedModules = modules.filter((m) =>
+    canAccess(profile, m.permission, m.roles)
+  )
+
+  const breadcrumbText =
+    section === 'productos'
+      ? 'Maestros y empaque'
+      : section === 'inventario'
+      ? 'Inventario y almacenes'
+      : 'Resumen operativo'
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
+    <div className="app-layout">
+      {/* Barra Lateral Fija de 220 px (skill_design.md) */}
+      <aside className="app-sidebar" aria-label="Navegación principal">
         <div>
-          <p className="eyebrow">
-            <span style={{ marginRight: '6px' }}>🕸️</span>
-            IMPORTACIONES SHALOM · SISTEMA TÁCTICO RFID
-          </p>
-          <h1>Centro de Operaciones</h1>
-        </div>
-        <div className="account">
-          <div>
-            <strong>{profile?.nombre_completo ?? user.email}</strong>
-            <span>{profile?.roles.join(' · ') || 'Sin rol asignado'}</span>
+          <div className="sidebar-header">
+            <h1 className="sidebar-brand-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+                <path d="m3.3 7 8.7 5 8.7-5" />
+                <path d="M12 22V12" />
+              </svg>
+              SHALOM
+            </h1>
+            <span className="sidebar-brand-subtitle">Centro de operaciones</span>
           </div>
-          <button className="button secondary" onClick={() => void signOut()}>
+
+          <nav className="sidebar-nav">
+            <button
+              type="button"
+              className={`sidebar-nav-item ${section === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setSection('dashboard')}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect width="7" height="9" x="3" y="3" rx="1" />
+                <rect width="7" height="5" x="14" y="3" rx="1" />
+                <rect width="7" height="9" x="14" y="12" rx="1" />
+                <rect width="7" height="5" x="3" y="16" rx="1" />
+              </svg>
+              <span>Resumen</span>
+            </button>
+
+            <span className="sidebar-group-label">Módulos operativos</span>
+
+            <button
+              type="button"
+              className={`sidebar-nav-item ${section === 'productos' ? 'active' : ''}`}
+              onClick={() => setSection('productos')}
+            >
+              <span className="sidebar-nav-code">01</span>
+              <span>Maestros y empaque</span>
+            </button>
+
+            <button
+              type="button"
+              className={`sidebar-nav-item ${section === 'inventario' ? 'active' : ''}`}
+              onClick={() => setSection('inventario')}
+            >
+              <span className="sidebar-nav-code">02</span>
+              <span>Inventario y Kardex</span>
+            </button>
+
+            {/* Módulos futuros accesibles según permisos del usuario */}
+            {allowedModules
+              .filter((m) => m.key !== 'productos' && m.key !== 'inventario')
+              .map((m) => {
+                const codeMap: Record<string, string> = {
+                  ordenes: '03',
+                  recepciones: '04',
+                  auditorias: '05',
+                  usuarios: '06'
+                }
+                return (
+                  <button
+                    key={m.key}
+                    type="button"
+                    className="sidebar-nav-item"
+                    disabled
+                    title="Módulo en desarrollo"
+                  >
+                    <span className="sidebar-nav-code">{codeMap[m.key] ?? '00'}</span>
+                    <span>{m.name}</span>
+                    <span className="sidebar-nav-tag">Pronto</span>
+                  </button>
+                )
+              })}
+          </nav>
+        </div>
+
+        {/* Información del Usuario y Cierre de Sesión */}
+        <div className="sidebar-footer">
+          <div className="sidebar-user-info">
+            <span className="sidebar-user-name" title={profile?.nombre_completo ?? user.email ?? ''}>
+              {profile?.nombre_completo ?? user.email}
+            </span>
+            <span className="sidebar-user-role">
+              {profile?.roles?.length ? profile.roles.join(', ') : 'Sin rol asignado'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="sidebar-logout-btn"
+            onClick={() => void signOut()}
+          >
             Cerrar sesión
           </button>
         </div>
-      </header>
+      </aside>
 
-      {section === 'productos' ? (
-        <ProductsPage onBack={() => setSection('dashboard')} />
-      ) : section === 'inventario' ? (
-        <InventoryPage onBack={() => setSection('dashboard')} />
-      ) : (
-        <DashboardPage
-          profile={profile}
-          onOpenProducts={() => setSection('productos')}
-          onOpenInventory={() => setSection('inventario')}
-        />
-      )}
-    </main>
+      {/* Espacio Central de Trabajo (skill_design.md) */}
+      <div className="app-main">
+        {/* Cabecera Superior: breadcrumb, selector de contexto, acciones */}
+        <header className="app-header">
+          <div className="breadcrumb-bar">
+            <span>Inicio</span>
+            <span aria-hidden="true">/</span>
+            <span className="breadcrumb-active">{breadcrumbText}</span>
+          </div>
+
+          <div className="header-actions">
+            <div className="operational-status-pill">
+              <span className="status-dot" aria-hidden="true" />
+              <span>Operativo en línea</span>
+            </div>
+            <ThemeToggle showLabel={false} />
+          </div>
+        </header>
+
+        {/* Contenedor de la Vista Activa */}
+        <main className="app-workspace">
+          {section === 'productos' ? (
+            <ProductsPage onBack={() => setSection('dashboard')} />
+          ) : section === 'inventario' ? (
+            <InventoryPage onBack={() => setSection('dashboard')} />
+          ) : (
+            <DashboardPage
+              profile={profile}
+              onOpenProducts={() => setSection('productos')}
+              onOpenInventory={() => setSection('inventario')}
+            />
+          )}
+        </main>
+      </div>
+    </div>
   )
 }
-

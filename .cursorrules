@@ -1,0 +1,17 @@
+# Reglas y Protocolos del Proyecto — Importaciones Shalom
+
+## Fuente de Verdad del Contexto
+El archivo `CONTEXTO_SISTEMA.md` ubicado en la raíz del proyecto es la única **Fuente de Verdad** técnica y arquitectónica de la aplicación.
+
+## Regla de Mantenimiento Obligatorio
+Cada vez que se agregue, modifique o elimine código (frontend en `src/`, migraciones SQL en `supabase/`, configuraciones o endpoints):
+1. Actualiza inmediatamente la sección del módulo correspondiente en `CONTEXTO_SISTEMA.md`.
+2. Actualiza las conexiones con Supabase (tablas, columnas, RPCs, RLS, buckets de Storage).
+3. Añade una fila al final en la tabla de **Historial de Versiones del Contexto (Changelog)** de `CONTEXTO_SISTEMA.md`.
+
+## Sistema de Diseño Visual Obligatorio (`skill_design.md`)
+Al crear o modificar cualquier vista, formulario, tabla o componente en el frontend:
+- Respetar los tokens oficiales: `--color-canvas: #F2F6F8`, `--color-surface: #FFFFFF`, `--color-brand-deep: #123D4A`, `--color-brand: #167D8D`, `--color-border: #D8E3E7`, `--color-warning: #BC791F`, `--color-danger: #B3402A`, `--color-success: #2F7D4F`.
+- Tipografía: `Barlow Semi Condensed` para títulos y display; `Source Sans 3` para cuerpo, controles y tablas.
+- Reglas: Usar sentence case (nunca ALL CAPS en cabeceras o etiquetas), encabezados alineados a la izquierda sin cursivas, sin degradados ni sombras decorativas.
+- Layout: Sidebar fijo de 220 px (`--color-brand-deep`), cabecera con migas de pan y espacio de trabajo de alto contraste sobre fondo canvas.

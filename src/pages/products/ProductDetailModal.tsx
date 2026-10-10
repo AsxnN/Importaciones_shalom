@@ -340,30 +340,30 @@ export function ProductDetailModal({
 
             {/* Especificaciones de Paletizado y Estibado */}
             <div className="detail-section">
-              <h4>Especificaciones de Paletizado y Estibado</h4>
+              <h4>Especificaciones de paletizado y estibado</h4>
               <div className="detail-stats-grid">
                 <div className="stat-box">
-                  <span>Unidades / Caja</span>
+                  <span>Unidades por caja</span>
                   <strong>{rule.unidades_por_caja}</strong>
                 </div>
                 <div className="stat-box">
-                  <span>Cajas / Camada</span>
+                  <span>Cajas por camada</span>
                   <strong>{rule.cajas_por_camada}</strong>
                 </div>
                 <div className="stat-box">
-                  <span>Camadas / Paleta</span>
+                  <span>Camadas por paleta</span>
                   <strong>{rule.numero_camadas}</strong>
                 </div>
                 <div className="stat-box highlight">
-                  <span>Total Cajas / Paleta</span>
+                  <span>Total cajas por paleta</span>
                   <strong>{cajasPaleta}</strong>
                 </div>
                 <div className="stat-box highlight">
-                  <span>Total Unidades / Paleta</span>
+                  <span>Total unidades por paleta</span>
                   <strong>{unidadesPaleta}</strong>
                 </div>
                 <div className="stat-box">
-                  <span>Permite Puchos</span>
+                  <span>Permite puchos</span>
                   <strong>{rule.permite_puchos ? 'Sí' : 'No'}</strong>
                 </div>
               </div>
@@ -372,39 +372,39 @@ export function ProductDetailModal({
             {/* Dimensiones Físicas y Cubicaje */}
             {(rule.largo_caja_cm || rule.ancho_caja_cm || rule.alto_caja_cm || rule.peso_caja_kg) && (
               <div className="detail-section">
-                <h4>Dimensiones Físicas y Cubicaje</h4>
+                <h4>Dimensiones físicas y cubicaje</h4>
                 <div className="detail-stats-grid">
                   <div className="stat-box">
-                    <span>Medidas Caja (cm)</span>
+                    <span>Medidas caja (cm)</span>
                     <strong>
                       {rule.largo_caja_cm ?? '—'} × {rule.ancho_caja_cm ?? '—'} × {rule.alto_caja_cm ?? '—'}
                     </strong>
                   </div>
                   <div className="stat-box">
-                    <span>Peso por Caja</span>
+                    <span>Peso por caja</span>
                     <strong>{rule.peso_caja_kg ? `${rule.peso_caja_kg} kg` : '—'}</strong>
                   </div>
                   {altoPaletaCm !== null && (
                     <div className="stat-box highlight">
-                      <span>Alto Estimado Paleta</span>
+                      <span>Alto estimado paleta</span>
                       <strong>{altoPaletaCm.toFixed(1)} cm</strong>
                     </div>
                   )}
                   {volumenCajaM3 !== null && (
                     <div className="stat-box">
-                      <span>Volumen Caja</span>
+                      <span>Volumen caja</span>
                       <strong>{volumenCajaM3.toFixed(4)} m³</strong>
                     </div>
                   )}
                   {volumenPaletaM3 !== null && (
                     <div className="stat-box highlight">
-                      <span>Volumen Paleta</span>
+                      <span>Volumen paleta</span>
                       <strong>{volumenPaletaM3.toFixed(3)} m³</strong>
                     </div>
                   )}
                   {pesoPaletaKg !== null && (
                     <div className="stat-box highlight">
-                      <span>Peso Estimado Paleta</span>
+                      <span>Peso estimado paleta</span>
                       <strong>{pesoPaletaKg.toFixed(1)} kg</strong>
                     </div>
                   )}
@@ -414,9 +414,9 @@ export function ProductDetailModal({
 
             {/* Patrón de Armado y Diagrama */}
             <div className="detail-section">
-              <h4>Patrón de Armado de Camada</h4>
+              <h4>Patrón de armado de camada</h4>
               {rule.notas_armado ? (
-                <p style={{ margin: '0 0 10px', fontSize: '0.92rem', color: '#27382d' }}>
+                <p style={{ margin: '0 0 10px', fontSize: '0.92rem', color: 'var(--color-text-primary)' }}>
                   <strong>Instrucciones:</strong> {rule.notas_armado}
                 </p>
               ) : (
@@ -427,7 +427,7 @@ export function ProductDetailModal({
 
               {rule.imagen_armado_path ? (
                 <div className="diagram-box">
-                  <p style={{ margin: '0 0 10px', fontSize: '0.82rem', color: '#5d6b62' }}>
+                  <p style={{ margin: '0 0 10px', fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
                     Diagrama almacenado en: <code>{rule.imagen_armado_path}</code>
                   </p>
                   {loadingImage ? (
@@ -462,7 +462,7 @@ export function ProductDetailModal({
           </>
         ) : null}
 
-        <div style={{ textAlign: 'right', marginTop: '22px', borderTop: '1px solid #edf1ee', paddingTop: '16px' }}>
+        <div style={{ textAlign: 'right', marginTop: '22px', borderTop: '1px solid var(--color-border)', paddingTop: '16px' }}>
           <button className="button secondary" type="button" onClick={onClose}>
             Cerrar ficha
           </button>

@@ -66,12 +66,14 @@ export function ProductsPage({ onBack }: { onBack: () => void }) {
       {/* Encabezado del Módulo 1 */}
       <div className="page-heading">
         <div>
-          <button className="link-button" type="button" onClick={onBack}>
-            ← Volver al Menú
+          <button className="link-back" type="button" onClick={onBack}>
+            <span aria-hidden="true">‹</span> Volver al panel principal
           </button>
-          <p className="eyebrow">MÓDULO 1</p>
-          <h2>Maestros y Empaque</h2>
-          <p className="muted">
+          <div className="view-title-row">
+            <h2>Maestros y empaque</h2>
+            <span className="module-code-badge">MOD-01</span>
+          </div>
+          <p className="page-lead">
             Gestión unificada de productos, especificaciones de empaque y estibado, categorías, proveedores e importación masiva.
           </p>
         </div>
@@ -87,7 +89,7 @@ export function ProductsPage({ onBack }: { onBack: () => void }) {
           type="button"
           onClick={() => setActiveTab('productos')}
         >
-          Productos y Empaque
+          Productos y empaque
         </button>
         <button
           className={activeTab === 'categorias' ? 'active' : ''}

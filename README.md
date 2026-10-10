@@ -1,32 +1,47 @@
-# React + TypeScript + Vite
+# Importaciones Shalom · Sistema Táctico de Inventarios
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Sistema inteligente de gestión de inventarios, cubicaje y estibado, trazabilidad de existencias, conciliación ciega de importaciones con App Móvil y auditorías de exactitud de registro (ERI).
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 📖 Documentación Maestra y Contexto del Sistema
 
-## React Compiler
+> **Para conocer la arquitectura completa, el desglose de cada módulo y las conexiones detalladas con Supabase, consulta:**  
+> 👉 **[`CONTEXTO_SISTEMA.md`](./CONTEXTO_SISTEMA.md)**
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Cualquier cambio de código en la aplicación debe actualizar dicho archivo siguiendo las pautas de [`AGENTS.md`](./AGENTS.md).
 
-## Expanding the Oxlint configuration
+---
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## 🛠️ Stack Tecnológico
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+- **Frontend Web:** React 19, TypeScript ~6.0, Vite 8, Oxlint.
+- **App Móvil Operativa:** Aplicación móvil táctica para operarios de almacén y muelle (escaneo NFC/cámara/Bluetooth, alertas hápticas y cola offline).
+- **Backend & BD:** Supabase (PostgreSQL 17, RLS, RPCs transaccionales, Storage).
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+---
+
+## 🚀 Inicio Rápido
+
+1. **Instalar dependencias:**
+   ```bash
+   npm install
+   ```
+
+2. **Configurar variables de entorno:**
+   Copia `.env.example` a `.env` y define tus credenciales de Supabase:
+   ```env
+   VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
+   VITE_SUPABASE_ANON_KEY=tu_clave_anonima_publica
+   ```
+
+3. **Ejecutar en desarrollo:**
+   ```bash
+   npm run dev
+   ```
+
+4. **Compilar y validar tipos:**
+   ```bash
+   npm run build
+   npm run lint
+   ```

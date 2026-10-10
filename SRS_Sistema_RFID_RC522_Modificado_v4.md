@@ -2,43 +2,44 @@
 
 **Proyecto:** Sistema Inteligente de Gestión de Inventarios RFID, Control de Existencias, Calidad y Decisiones de Importación  
 **Estándar de referencia:** IEEE 830 / ISO/IEC/IEEE 29148  
-**Versión:** 4.0 — Ajustada para ESP32-S3 + MFRC522, paletas completas, puchos y fórmulas de proyección validadas con datos reales de `Stock_Ledger.xlsx`
+**Versión:** 5.0 — Migrada a Aplicación Móvil con NFC (`Importaciones/shalom_movil`) para lectura de tags RFID HF (NTAG213 / MIFARE Classic), paletas completas, puchos y fórmulas de proyección validadas con datos reales de `Stock_Ledger.xlsx`
 
 ---
 
 ## 1. Propósito
 
-Este documento especifica los requisitos funcionales y no funcionales de un sistema web y un dispositivo portátil de inventario basado en RFID.
+Este documento especifica los requisitos funcionales y no funcionales de un sistema web y una aplicación móvil operativa táctica de inventario basada en escaneo RFID / NFC.
 
 El sistema permite:
 
 - Gestionar productos, categorías, almacenes, empaque y estibado.
 - Controlar inventario por producto y almacén.
 - Registrar movimientos de ingreso, despacho, retiro parcial, auditoría y ajuste autorizado.
-- Recibir mercancía mediante escaneo RFID de paletas completas y cajas pucho.
+- Recibir mercancía mediante escaneo RFID/NFC de paletas completas y cajas pucho desde el terminal móvil del operario.
 - Realizar auditorías de exactitud de inventario (ERI) mediante conteo secuencial.
 - Mantener trazabilidad de lecturas, sesiones, movimientos y conciliaciones.
 - Analizar consumo, semáforo de reposición, clasificación ABC, compras e importaciones, con fórmulas de proyección validadas contra un ledger real de inventario.
-- Trabajar sin conexión temporal y sincronizar eventos posteriormente.
+- Trabajar sin conexión temporal en muelle/almacén y sincronizar eventos posteriormente.
 
 ---
 
 ## 2. Alcance y definiciones
 
-### 2.1 Arquitectura RFID definida
+### 2.1 Arquitectura RFID y Dispositivo Operativo Definido
 
 | Componente | Especificación | Función |
 |---|---|---|
-| Microcontrolador | ESP32-S3-WROOM-1 | Procesamiento, Wi-Fi, pantalla, cola offline y lógica de operación |
-| Lector RFID | MFRC522 | Lectura RFID HF mediante SPI |
-| Frecuencia RFID | 13,56 MHz | Identificación de corto alcance |
-| Tags | MIFARE Classic 1K o NTAG213 | Identificación de paletas completas, cajas pucho u otros objetos definidos |
-| Pantalla | OLED 0,96 pulgadas SSD1306 por I2C | Navegación, datos de operación, errores y estado del dispositivo |
-| Control | Encoder rotativo con pulsador | Navegación, confirmación y ajuste de cantidades |
-| Alertas | Buzzer activo y LED RGB | Confirmación de lectura, error y estado de sincronización |
-| Alimentación | LiPo 3,7 V + TP4056 + LDO 3,3 V | Alimentación portátil regulada |
+| Dispositivo de Captura | Smartphone / Terminal Móvil Android Rugerizado | Procesamiento, pantalla táctil, conectividad Wi-Fi/4G, cola offline y ejecución de la app operativa (`Importaciones/shalom_movil`) |
+| Aplicación Móvil | `shalom_movil` (React Native / Android nativo) | Interfaz táctica para operarios de muelle y almacén, flujo guiado de escaneo, conteo ciego y sincronización |
+| Lector RFID / NFC | Sensor NFC integrado del smartphone (13,56 MHz, ISO/IEC 14443A) | Lectura por aproximación de tags RFID HF |
+| Frecuencia RFID | 13,56 MHz (HF) | Identificación de corto alcance / proximidad |
+| Tags | NTAG213 o MIFARE Classic 1K | Identificación física de paletas completas y cajas pucho |
+| Pantalla e Interfaz | Pantalla táctil del dispositivo móvil | Navegación táctil, selección de órdenes/almacenes, confirmación y resumen de estiba |
+| Alertas | Motor háptico (vibración) + Altavoz/Buzzer del móvil | Confirmación física de lectura, alerta de duplicados y notificaciones |
+| Batería y Alimentación | Batería recargable integrada del smartphone / terminal | Autonomía durante el turno de trabajo en muelle/almacén |
+| Persistencia Offline | Almacenamiento local seguro (SQLite / AsyncStorage en `shalom_movil`) | Cola de lecturas y sesiones pausadas cuando no hay señal en muelle |
 
-El MFRC522 opera con lectura RFID HF de corto alcance. El operario debe acercar el tag al lector, usualmente a una distancia máxima aproximada de 5 cm. El sistema no utiliza EPC UHF, RSSI de UHF, lectores de portón ni lectura automática de larga distancia.
+El sensor NFC del dispositivo móvil opera con lectura RFID HF de corto alcance. El operario aproxima el teléfono al tag (adherido al film de la paleta o caja), a una distancia máxima aproximada de 0 a 4 cm. El sistema no utiliza microcontroladores físicos externos (ESP32), módulos MFRC522 cableados, ni lectores de portón UHF de largo alcance.
 
 ### 2.2 Definiciones operativas
 
@@ -101,40 +102,40 @@ Usando el histórico real de `ROLLO CONTOMETRO` en `Stock_Ledger.xlsx`, se ident
 
 ### [RF-01] Captura de lecturas RFID HF por proximidad
 
-**Descripción:** El sistema debe permitir capturar individualmente el UID de etiquetas RFID HF de 13,56 MHz mediante un dispositivo portátil ESP32-S3 equipado con un módulo MFRC522.
+**Descripción:** El sistema debe permitir capturar individualmente el UID de etiquetas RFID HF de 13,56 MHz mediante el sensor NFC integrado en el terminal móvil o smartphone que ejecuta la aplicación operativa `Importaciones/shalom_movil`.
 
-**Actor principal:** Operario de almacén mediante ESP32-S3 + MFRC522.
+**Actor principal:** Operario de almacén mediante smartphone / terminal móvil con NFC (`shalom_movil`).
 
 **Precondiciones:**
 
-- El ESP32-S3 debe tener un almacén activo configurado.
-- El operario debe haber seleccionado una operación desde el menú del dispositivo.
-- El dispositivo debe contar con configuración de red o con almacenamiento offline disponible.
+- La app `shalom_movil` debe tener una sesión activa de operario y un almacén activo seleccionado.
+- El operario debe haber seleccionado el tipo de operación (Recepción, Auditoría, Consulta).
+- El terminal móvil debe contar con conectividad de red o con persistencia local offline habilitada.
 
 **Entrada:** Solicitud de lectura con los siguientes campos mínimos:
 
 - `uid_hex`
-- `dispositivo_id`
+- `dispositivo_id` (identificador o UUID del terminal móvil registrado en `public.dispositivo_iot`)
 - `almacen_id`
 - `tipo_evento`: CONSULTA, MOVIMIENTO, RECEPCION, AUDITORIA o ENROLAMIENTO
 - `id_sesion_escaneo`, si aplica
 - `fecha_hora_lectura`
 - `id_operario`, si aplica
-- `id_evento`, identificador único para idempotencia
+- `id_evento`, identificador único UUID para idempotencia
 
 **Proceso:**
 
-1. El operario selecciona una operación en el menú.
-2. El dispositivo muestra el mensaje "Acerque el tag al lector".
-3. El operario aproxima el tag RFID al MFRC522.
-4. El MFRC522 obtiene el UID a través del bus SPI.
-5. El ESP32-S3 emite una señal visual y sonora de lectura.
-6. El dispositivo verifica que el UID no haya sido leído previamente dentro de la misma sesión o ventana de anti-rebote.
-7. Si hay conectividad, el dispositivo envía la lectura al backend.
+1. El operario selecciona una operación en la interfaz táctil de `shalom_movil`.
+2. La app muestra la indicación "Aproxime el dispositivo móvil a la etiqueta RFID/NFC".
+3. El operario acerca la parte posterior del smartphone a la etiqueta física adherida a la paleta o caja.
+4. El controlador NFC del sistema operativo captura el UID del tag (ISO/IEC 14443A).
+5. La app emite confirmación háptica (vibración) y tono sonoro de lectura exitosa.
+6. La app verifica en memoria/local que el UID no haya sido leído previamente dentro de la misma sesión o ventana de anti-rebote.
+7. Si hay conectividad Wi-Fi o datos móviles, la app envía la lectura directamente al backend de Supabase.
 8. El backend valida el dispositivo, el almacén activo, el UID y el tipo de evento.
 9. Si el UID existe, devuelve la información asociada y el resultado de validación.
 10. Si el UID no existe, registra el evento como `NO_IDENTIFICADO`.
-11. Si no hay conectividad o falla la API, el dispositivo guarda el evento en LittleFS como pendiente de sincronización.
+11. Si no hay conectividad o falla la API, la app almacena el evento en la base de datos local SQLite / almacenamiento offline seguro como pendiente de sincronización.
 
 **Salida:** Lectura RFID con resultado `VALIDADA`, `DUPLICADA`, `NO_IDENTIFICADA`, `RECHAZADA_POR_REGLA`, `ERROR_API` o `PENDIENTE_SINCRONIZACION`.
 
@@ -406,7 +407,7 @@ OTIF\% = (OnTime \times InFull) \times 100
 5. Opciones: reanudar paletas, escanear puchos, terminar.
 6. Al finalizar, estado pasa a `PENDIENTE_CONFIRMACION`.
 7. Solo tras confirmación se registran movimientos que afectan stock.
-8. Sin red, guardar sesión y eventos en LittleFS.
+8. Sin red, guardar sesión y eventos en la base de datos local SQLite / almacenamiento offline seguro de la app móvil.
 
 **Prioridad:** Alta.
 
@@ -577,15 +578,15 @@ Consultas con hasta 100,000 movimientos históricos deben cargar en menos de 2 s
 
 ### [RNF-03] Seguridad y control de acceso
 
-RBAC (Administrador, Comprador, Operario, Auditor), HTTPS, contraseñas con bcrypt, sesiones JWT, token por dispositivo ESP32-S3, auditoría de acciones sensibles.
+RBAC (Administrador, Comprador, Operario, Auditor), HTTPS, sesiones autenticadas JWT mediante Supabase Auth en la app móvil `shalom_movil` y panel web, validación de terminal móvil registrado en `dispositivo_iot`, RLS en PostgreSQL y auditoría de acciones sensibles.
 
 ### [RNF-04] Operación offline e idempotencia
 
-NVS/EEPROM para configuración; LittleFS para lecturas, movimientos, sesiones pausadas y UIDs leídos. Backend idempotente por `id_evento`.
+Almacenamiento local seguro en el dispositivo móvil (SQLite / almacenamiento offline cifrado) para lecturas, movimientos, sesiones pausadas y UIDs leídos. Sincronización automática o manual al recuperar red; backend e invocación RPC `conciliar_recepcion` idempotente por `id_evento` (UUID).
 
-### [RNF-05] Usabilidad en el dispositivo
+### [RNF-05] Usabilidad en el dispositivo móvil
 
-Mensajes cortos, confirmación con buzzer/LED, distinción clara de errores, visualización de paletas/puchos/cajas/unidades durante recepción.
+Interfaz táctil reactiva adaptada para uso con una sola mano en almacén, confirmación de lectura mediante respuesta háptica (vibración) y tono sonoro, distinción clara de estados (éxito, duplicado, discrepancia), y visualización clara de paletas/puchos/cajas durante la recepción.
 
 ### [RNF-06] Reactividad web
 
@@ -637,42 +638,42 @@ PENDIENTE, EN_PROCESO, PAUSADA, COMPLETA, CON_FALTANTES, CON_SOBRANTES, CON_DISC
 
 ---
 
-## 6. Flujo del escáner
+## 6. Flujo de la Aplicación Móvil Operativa (`shalom_movil`)
 
-### 6.1 Menú principal
+### 6.1 Menú principal en la App Móvil
 ```text
-1. Consulta de stock
-2. Escanear tag / movimientos
-3. Recepción por producto
+1. Consulta de stock y ubicación
+2. Escaneo NFC de tag / registro de movimientos
+3. Recepción táctica por orden / producto (conciliación ciega)
 4. Auditoría ERI secuencial
-5. Cola de pendientes offline
-6. Información del sistema
-7. Configuración (almacén activo, Wi-Fi, URL/API, brillo OLED, standby)
+5. Cola de pendientes offline y sincronización
+6. Información del dispositivo y terminal móvil
+7. Configuración (almacén activo, red, sincronización, perfil)
 ```
 
-### 6.2 Flujo de recepción por producto
+### 6.2 Flujo de recepción táctica por producto
 ```text
-Seleccionar almacén → Seleccionar orden (si aplica) → Seleccionar producto →
-Mostrar cajas por paleta, unidades por caja, unidades por paleta →
-Iniciar escaneo de paletas completas → Pausar →
+Seleccionar almacén → Seleccionar orden de importación → Seleccionar producto →
+Mostrar especificación de estiba (cajas por camada, camadas, unidades) →
+Iniciar escaneo NFC de paletas completas → Pausar →
 [Reanudar paletas | Escanear puchos | Terminar escaneo] →
-Mostrar resumen → Confirmar → Generar movimientos → Actualizar stock
+Mostrar resumen de bultos físicos contados → Confirmar → 
+Invocar RPC conciliar_recepcion() → Generar movimientos → Actualizar stock
 ```
 
 ### 6.3 Validaciones durante recepción
-
-| Caso | Respuesta del sistema |
+| Caso | Respuesta del sistema en la App Móvil |
 |---|---|
-| Tag válido de paleta del producto y almacén | Sumar paleta completa y equivalencias |
+| Tag válido de paleta del producto y almacén | Sumar paleta completa y equivalencias de cajas/unidades; vibración corta |
 | Tag válido de caja pucho | Sumar pucho, caja y unidades por caja |
-| Tag duplicado en la sesión | No sumar; alertar duplicado |
-| Tag no identificado | No sumar; registrar incidencia |
-| Tag de otro producto | No sumar; mostrar discrepancia |
-| Tag de otro almacén | No sumar sin autorización |
-| Tag despachado o bloqueado | No sumar; mostrar estado |
-| Error de red | Guardar evento en LittleFS |
-| Sesión pausada | Conservar acumulados y UIDs leídos |
-| Cierre sin confirmación | No modificar stock |
+| Tag duplicado en la sesión | No sumar; emitir vibración doble de advertencia y alertar en pantalla |
+| Tag no identificado | No sumar; registrar incidencia en bitácora |
+| Tag de otro producto | No sumar; alertar discrepancia de producto |
+| Tag de otro almacén | No sumar sin autorización expresa |
+| Tag despachado o bloqueado | No sumar; mostrar estado del tag |
+| Error de conectividad | Guardar evento en la cola offline local (SQLite) |
+| Sesión pausada | Conservar acumulados y UIDs leídos en persistencia local |
+| Cierre sin confirmación | No modificar stock contable |
 
 ---
 
@@ -684,7 +685,7 @@ skinparam classAttributeIconSize 0
 skinparam NodePadding 10
 skinparam BoxPadding 10
 
-title DIAGRAMA DE CLASES - SISTEMA RFID HF ESP32-S3 + RC522
+title DIAGRAMA DE CLASES - SISTEMA RFID HF Y APP MÓVIL (shalom_movil)
 
 enum EstadoTag {
   DISPONIBLE
@@ -908,17 +909,18 @@ package "Módulo 3: Pedidos, Paletizado y Recepción" {
   }
 }
 
-package "Módulo 4: Hardware ESP32-S3" {
-  class DispositivoESP32 {
+package "Módulo 4: App Móvil shalom_movil" {
+  class DispositivoMovilNFC {
     +String idDispositivo
-    +String macAddress
+    +String uuidTerminal
     +String almacenActivoId
-    +String versionFirmware
+    +String versionApp
+    +String idOperarioActual
     --
-    +leerUID()
+    +leerTagNFC()
     +vincularTagFisico()
-    +sincronizarLote()
-    +guardarOffline()
+    +sincronizarLoteOffline()
+    +guardarEnColaLocal()
   }
 }
 
@@ -994,13 +996,13 @@ Pedido "1" -- "0..*" RecepcionMercancia : se recibe mediante >
 RecepcionMercancia "1" -- "1..*" SesionEscaneo : se ejecuta mediante >
 SesionEscaneo "1" -- "1" Producto : cuenta >
 SesionEscaneo "1" -- "1" Almacen : ocurre en >
-SesionEscaneo "1" -- "1" DispositivoESP32 : utiliza >
+SesionEscaneo "1" -- "1" DispositivoMovilNFC : utiliza >
 SesionEscaneo "1" -- "1" CalculoPaletizado : consolida >
 SesionEscaneo "1" -- "0..*" LecturaRFID : registra >
 SesionEscaneo "1" -- "0..*" MovimientoInventario : genera al confirmar >
 
-Almacen "1" -- "0..*" DispositivoESP32 : asignado a >
-DispositivoESP32 "1" -- "0..*" LecturaRFID : realiza >
+Almacen "1" -- "0..*" DispositivoMovilNFC : asignado a >
+DispositivoMovilNFC "1" -- "0..*" LecturaRFID : realiza >
 TagRFID "1" -- "0..*" LecturaRFID : es leído en >
 Producto "1" -- "0..*" TagRFID : identificado por >
 Almacen "1" -- "0..*" TagRFID : ubicado en >
@@ -1043,13 +1045,13 @@ Almacen "1" -- "0..*" StockAlmacen : almacena >
 | Cálculo de fecha de quiebre | Coincide con proyección lineal basada en promedio mensual o ponderado |
 | Pausar sesión de recepción | Conserva totales y UIDs ya leídos |
 | Confirmar recepción | Genera movimientos y actualiza StockAlmacen atómicamente |
-| Sin Wi-Fi | Guarda eventos y sesión en LittleFS |
+| Sin Wi-Fi | Guarda eventos y sesión en la cola offline local (SQLite) |
 | Auditoría ERI | Calcula físico vs teórico y registra discrepancias |
 
 ---
 
 ## 10. Conclusión de diseño
 
-El sistema opera con RFID HF de corto alcance mediante ESP32-S3 y MFRC522, con recepción secuencial de paletas completas y cajas pucho, pausa y reanudación persistente, y actualización atómica de stock por producto y almacén.
+El sistema opera con RFID HF de corto alcance mediante la aplicación móvil operativa táctica con NFC (`Importaciones/shalom_movil`) en terminales móviles o smartphones, con recepción secuencial de paletas completas y cajas pucho, pausa y reanudación persistente en cola offline local, y actualización atómica de stock por producto y almacén mediante procedimientos almacenados (RPC) en Supabase.
 
 El motor analítico incorpora las correcciones validadas contra el ledger real de inventario: ningún mes calendario debe excluirse del promedio aunque no tenga movimientos, los traslados y ajustes no deben contarse como consumo real, el semáforo debe distinguir productos sin historial de consumo, y la fecha estimada de quiebre de stock debe calcularse de forma explícita y documentada como parte del motor de proyección.

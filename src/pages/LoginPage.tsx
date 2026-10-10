@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { useAuth } from '../auth/AuthProvider'
+import { ThemeToggle } from '../lib/ThemeToggle'
 import { isSupabaseConfigured } from '../lib/supabase'
 
 export function LoginPage() {
@@ -19,17 +20,22 @@ export function LoginPage() {
 
   return (
     <main className="login-page">
+      <div className="login-theme-bar">
+        <ThemeToggle />
+      </div>
       <form className="login-card" onSubmit={submit}>
-        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-          <div style={{ fontSize: '2.5rem', marginBottom: '6px' }}>🕸️</div>
-          <p className="eyebrow" style={{ textAlign: 'center' }}>
-            IMPORTACIONES SHALOM
-          </p>
-          <h1 style={{ fontSize: '1.85rem', textAlign: 'center', margin: '4px 0 8px' }}>
-            Acceso Táctico
-          </h1>
-          <p className="muted" style={{ textAlign: 'center', fontSize: '0.88rem', margin: 0 }}>
-            Autenticación de seguridad para gestión de almacén e inventario RFID.
+        <div className="login-header">
+          <div className="login-icon-wrap" aria-hidden="true">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+              <path d="m3.3 7 8.7 5 8.7-5" />
+              <path d="M12 22V12" />
+            </svg>
+          </div>
+          <span className="brand-tag">Shalom Logística</span>
+          <h1>Ingreso al sistema</h1>
+          <p className="login-subtitle">
+            Control de inventarios, cubicaje de paletas y operaciones WMS.
           </p>
         </div>
 
@@ -74,7 +80,7 @@ export function LoginPage() {
           style={{ width: '100%', marginTop: '24px' }}
           disabled={sending || !isSupabaseConfigured}
         >
-          {sending ? 'Autenticando…' : 'Iniciar Sesión'}
+          {sending ? 'Autenticando…' : 'Iniciar sesión'}
         </button>
       </form>
     </main>

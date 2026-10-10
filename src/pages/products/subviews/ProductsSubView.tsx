@@ -312,8 +312,8 @@ export function ProductsSubView({
 
       {/* Formulario Unificado */}
       {showForm && (
-        <div style={{ marginTop: '20px', padding: '20px', background: 'rgba(9, 14, 26, 0.75)', border: '1px solid var(--spidey-border)', borderRadius: '12px' }}>
-          <h4 style={{ margin: '0 0 16px' }}>
+        <div style={{ marginTop: '20px', padding: '24px', background: 'var(--color-bg-surface-raised)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
+          <h4 style={{ margin: '0 0 16px', fontSize: '1.1rem', color: 'var(--color-text-main)' }}>
             {editing ? `Editar Producto y Ficha de Empaque: ${editing.sku}` : 'Registrar Nuevo Producto y Ficha de Empaque'}
           </h4>
 
@@ -503,26 +503,26 @@ export function ProductsSubView({
               </div>
 
               {/* Medidas y cálculos de paleta */}
-              <p style={{ margin: '14px 0 6px', fontWeight: 700, fontSize: '0.86rem', color: 'var(--spidey-blue)' }}>
+              <p style={{ margin: '14px 0 6px', fontWeight: 600, fontSize: '0.84rem', color: 'var(--color-tech-sky)' }}>
                 Estimaciones de la Paleta Armada (Cálculo según dimensiones de caja y camadas)
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-                <div className="stat-box" style={{ padding: '10px 14px', background: 'rgba(0, 180, 216, 0.08)', borderRadius: '8px', border: '1px solid rgba(0, 180, 216, 0.25)' }}>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Alto total estimado paleta:</span>
-                  <strong style={{ fontSize: '1.05rem', color: '#38bdf8' }}>
+                <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-bg-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', display: 'block' }}>Alto total estimado paleta:</span>
+                  <strong style={{ fontSize: '1rem', color: 'var(--color-tech-sky)', marginTop: '2px' }}>
                     {metrics.altoSugeridoCm ? `${metrics.altoSugeridoCm.toFixed(1)} cm` : '—'}
                   </strong>
-                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: '2px' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-subtle)', marginTop: '2px' }}>
                     ({altoCm || 0} cm × {numeroCamadas} camadas + 15 cm tarima)
                   </div>
                 </div>
 
-                <div className="stat-box" style={{ padding: '10px 14px', background: 'rgba(0, 180, 216, 0.08)', borderRadius: '8px', border: '1px solid rgba(0, 180, 216, 0.25)' }}>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Peso total estimado paleta:</span>
-                  <strong style={{ fontSize: '1.05rem', color: '#38bdf8' }}>
+                <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-bg-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', display: 'block' }}>Peso total estimado paleta:</span>
+                  <strong style={{ fontSize: '1rem', color: 'var(--color-tech-sky)', marginTop: '2px' }}>
                     {metrics.pesoSugeridoKg ? `${metrics.pesoSugeridoKg.toFixed(1)} kg` : '—'}
                   </strong>
-                  <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: '2px' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-subtle)', marginTop: '2px' }}>
                     ({pesoCajaKg || 0} kg × {metrics.cajasPaleta} cajas + 25 kg tarima)
                   </div>
                 </div>

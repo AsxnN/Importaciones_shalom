@@ -472,13 +472,15 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       {/* Encabezado Módulo 2 */}
       <div className="page-heading">
         <div>
-          <button className="link-button" type="button" onClick={onBack}>
-            ← Volver al Centro de Operaciones
+          <button className="link-back" type="button" onClick={onBack}>
+            <span aria-hidden="true">‹</span> Volver al panel principal
           </button>
-          <p className="eyebrow">MÓDULO 2 · CONTROL LOGÍSTICO Y RFID</p>
-          <h2>Inventario y Almacenes</h2>
-          <p className="muted">
-            Supervisión de existencias físicas por almacén, conteo en paletas completas y puchos, y administración completa de sedes.
+          <div className="view-title-row">
+            <h2>Inventario y Almacenes</h2>
+            <span className="module-code-badge">MOD-02</span>
+          </div>
+          <p className="page-lead">
+            Supervisión de existencias físicas por almacén, conteo en paletas completas y puchos, y administración de sedes.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
@@ -541,13 +543,11 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
               onClick={() => setSelectedWarehouseId(wh.id_almacen)}
               style={{
                 textAlign: 'left',
-                padding: '18px 20px',
-                borderRadius: '12px',
-                border: isSelected ? '2px solid var(--spidey-red)' : '1px solid var(--spidey-border)',
-                background: isSelected
-                  ? 'linear-gradient(145deg, rgba(229, 37, 33, 0.15), rgba(11, 17, 32, 0.95))'
-                  : 'rgba(11, 17, 32, 0.8)',
-                boxShadow: isSelected ? '0 0 20px var(--spidey-red-glow)' : 'none',
+                padding: '16px 18px',
+                borderRadius: '8px',
+                border: isSelected ? '1px solid var(--color-accent-amber)' : '1px solid var(--color-border)',
+                background: isSelected ? 'var(--color-bg-surface-raised)' : 'var(--color-bg-surface)',
+                boxShadow: isSelected ? '0 0 0 1px var(--color-accent-amber)' : 'none',
                 opacity: wh.activo ? 1 : 0.6,
                 cursor: 'pointer'
               }}
@@ -558,7 +558,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     fontSize: '0.72rem',
                     fontFamily: 'monospace',
                     fontWeight: 700,
-                    color: isSelected ? '#ff7b7b' : 'var(--spidey-blue)',
+                    color: isSelected ? 'var(--color-accent-amber)' : 'var(--color-tech-sky)',
                     textTransform: 'uppercase'
                   }}
                 >
@@ -568,10 +568,10 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   {wh.tipo === 'PRINCIPAL' ? '🏢' : wh.tipo === 'TIENDA' ? '🏪' : '⚠️'}
                 </span>
               </div>
-              <strong style={{ display: 'block', fontSize: '1.15rem', color: '#ffffff', margin: '8px 0 4px' }}>
+              <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--color-text-main)', margin: '6px 0 4px' }}>
                 {wh.nombre}
               </strong>
-              <span style={{ fontSize: '0.82rem', color: 'var(--spidey-text-muted)' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
                 Capacidad nominal: {wh.capacidad_m3 ?? '—'} m³
               </span>
             </button>
@@ -583,22 +583,22 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           type="button"
           onClick={startCreateWarehouse}
           style={{
-            border: '2px dashed var(--spidey-border)',
-            borderRadius: '12px',
-            background: 'rgba(10, 16, 30, 0.4)',
-            padding: '18px 20px',
-            color: 'var(--spidey-blue)',
+            border: '1px dashed var(--color-border)',
+            borderRadius: '8px',
+            background: 'var(--color-surface)',
+            padding: '16px 18px',
+            color: 'var(--color-brand)',
             cursor: 'pointer',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
             alignItems: 'center',
-            gap: '8px'
+            gap: '6px'
           }}
         >
-          <span style={{ fontSize: '1.5rem' }}>➕</span>
-          <strong style={{ fontSize: '0.95rem' }}>Añadir Nueva Sede</strong>
-          <span style={{ fontSize: '0.75rem', color: 'var(--spidey-text-muted)' }}>Crear almacén o tienda</span>
+          <span style={{ fontSize: '1.3rem' }}>➕</span>
+          <strong style={{ fontSize: '0.92rem' }}>Añadir nueva sede</strong>
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Crear almacén o tienda</span>
         </button>
       </div>
 
@@ -608,14 +608,13 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           className="panel"
           style={{
             padding: '20px 24px',
-            marginBottom: '24px',
-            background: 'rgba(10, 16, 30, 0.85)'
+            marginBottom: '24px'
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px', marginBottom: '16px' }}>
             <div>
-              <h3 style={{ margin: 0, fontSize: '1.2rem' }}>
-                Estado Operativo: {selectedWarehouse.nombre}
+              <h3 style={{ margin: 0, fontSize: '1.15rem' }}>
+                Estado operativo: {selectedWarehouse.nombre}
               </h3>
               <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.84rem' }}>
                 Consolidación de paletas completas y bultos pucho listos para conteo y escaneo RFID.
@@ -628,17 +627,17 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 onClick={() => startEditWarehouse(selectedWarehouse)}
                 style={{ padding: '6px 12px' }}
               >
-                ✏️ Configurar Almacén
+                Configurar almacén
               </button>
               <span
                 style={{
-                  fontSize: '0.84rem',
-                  fontWeight: 700,
-                  color: summary.pctOcupado > 85 ? '#ff5252' : 'var(--spidey-blue)',
-                  padding: '6px 12px',
-                  background: 'rgba(0, 180, 216, 0.1)',
-                  border: '1px solid var(--spidey-border)',
-                  borderRadius: '8px'
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  color: summary.pctOcupado > 85 ? 'var(--color-danger)' : 'var(--color-brand)',
+                  padding: '5px 12px',
+                  background: summary.pctOcupado > 85 ? 'rgba(179, 64, 42, 0.1)' : 'var(--color-brand-soft)',
+                  border: `1px solid ${summary.pctOcupado > 85 ? 'rgba(179, 64, 42, 0.3)' : 'var(--color-border)'}`,
+                  borderRadius: '6px'
                 }}
               >
                 Ocupado: {summary.totalVolumenM3} m³ / {selectedWarehouse.capacidad_m3 ?? 500} m³ ({summary.pctOcupado}%)
@@ -650,8 +649,8 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           <div
             style={{
               width: '100%',
-              height: '8px',
-              background: 'rgba(255, 255, 255, 0.08)',
+              height: '6px',
+              background: 'var(--color-border)',
               borderRadius: '99px',
               overflow: 'hidden',
               marginBottom: '18px'
@@ -662,10 +661,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 width: `${summary.pctOcupado}%`,
                 height: '100%',
                 background: summary.pctOcupado > 85
-                  ? 'linear-gradient(90deg, #ff5252, #e52521)'
-                  : 'linear-gradient(90deg, var(--spidey-blue), #38bdf8)',
-                boxShadow: summary.pctOcupado > 85 ? '0 0 10px #ff5252' : '0 0 10px var(--spidey-blue-glow)',
-                transition: 'width 0.4s ease'
+                  ? 'var(--color-danger)'
+                  : 'var(--color-brand)',
+                transition: 'width 0.3s ease'
               }}
             />
           </div>
@@ -673,27 +671,27 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           {/* 4 Cajas de Métricas Tácticas */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '14px' }}>
             <div className="stat-box highlight">
-              <span>Paletas Completas</span>
+              <span>Paletas completas</span>
               <strong style={{ fontSize: '1.45rem' }}>{summary.totalPaletas}</strong>
-              <span style={{ fontSize: '0.72rem', color: '#ff8585', marginTop: '4px' }}>Unidades en tarima estándar</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Tarimas estándar consolidadas</span>
             </div>
 
             <div className="stat-box">
-              <span>Cajas Pucho (Sueltas)</span>
-              <strong style={{ fontSize: '1.45rem', color: 'var(--spidey-blue)' }}>{summary.totalPuchos}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-subtle)', marginTop: '4px' }}>Paquetes fuera de estiba</span>
+              <span>Cajas pucho (sueltas)</span>
+              <strong style={{ fontSize: '1.45rem', color: 'var(--color-brand)' }}>{summary.totalPuchos}</strong>
+              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Paquetes fuera de estiba</span>
             </div>
 
             <div className="stat-box">
-              <span>Total Unidades</span>
+              <span>Total unidades</span>
               <strong style={{ fontSize: '1.45rem' }}>{summary.totalUnidades.toLocaleString()}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-subtle)', marginTop: '4px' }}>Inventario total disponible</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Inventario total disponible</span>
             </div>
 
             <div className="stat-box">
               <span>Artículos / SKUs</span>
-              <strong style={{ fontSize: '1.45rem', color: '#38bdf8' }}>{summary.itemsCount}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-subtle)', marginTop: '4px' }}>Registrados en este almacén</span>
+              <strong style={{ fontSize: '1.45rem', color: 'var(--color-brand)' }}>{summary.itemsCount}</strong>
+              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Registrados en este almacén</span>
             </div>
           </div>
         </div>
@@ -782,26 +780,26 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                           </span>
                         </td>
                         <td>
-                          <strong style={{ fontSize: '1.05rem', color: paletas > 0 ? '#ff5252' : 'inherit' }}>
+                          <strong style={{ fontSize: '1.05rem', color: paletas > 0 ? 'var(--color-brand)' : 'inherit' }}>
                             {paletas} paletas
                           </strong>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--spidey-text-subtle)' }}>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
                             ({paletas * cPaleta} cajas)
                           </div>
                         </td>
                         <td>
-                          <span style={{ fontWeight: 700, color: puchos > 0 ? 'var(--spidey-blue)' : 'inherit' }}>
+                          <span style={{ fontWeight: 700, color: puchos > 0 ? 'var(--color-brand)' : 'inherit' }}>
                             {puchos} cajas
                           </span>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--spidey-text-subtle)' }}>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
                             ({puchos * uCaja} unid.)
                           </div>
                         </td>
                         <td>
-                          <strong style={{ fontSize: '1.1rem', color: '#ffffff' }}>
+                          <strong style={{ fontSize: '1.1rem', color: 'var(--color-text-primary)' }}>
                             {stock.toLocaleString()}
                           </strong>{' '}
-                          <span style={{ fontSize: '0.78rem', color: 'var(--spidey-text-muted)' }}>
+                          <span style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>
                             {item.producto?.unidad_medida ?? 'UNID'}
                           </span>
                         </td>
@@ -899,7 +897,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       <td style={{ fontWeight: 700 }}>
                         {m.cantidad_afectada} unidades
                       </td>
-                      <td style={{ fontSize: '0.85rem', color: 'var(--spidey-text-muted)' }}>
+                      <td style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>
                         {m.motivo ?? '—'}
                       </td>
                     </tr>
@@ -948,7 +946,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   <tr key={wh.id_almacen}>
                     <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>#{wh.id_almacen}</td>
                     <td>
-                      <strong style={{ fontSize: '1rem', color: '#ffffff' }}>{wh.nombre}</strong>
+                      <strong style={{ fontSize: '1rem', color: 'var(--color-text-main)' }}>{wh.nombre}</strong>
                     </td>
                     <td>
                       <span
@@ -984,15 +982,15 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       <span
                         style={{
                           padding: '2px 8px',
-                          borderRadius: '99px',
+                          borderRadius: '4px',
                           fontSize: '0.75rem',
-                          fontWeight: 700,
-                          background: wh.activo ? 'rgba(0, 180, 216, 0.15)' : 'rgba(255, 255, 255, 0.08)',
-                          color: wh.activo ? '#38bdf8' : 'var(--spidey-text-muted)',
-                          border: `1px solid ${wh.activo ? 'rgba(0, 180, 216, 0.4)' : 'rgba(255, 255, 255, 0.15)'}`
+                          fontWeight: 600,
+                          background: wh.activo ? 'rgba(47, 125, 79, 0.1)' : 'rgba(98, 121, 133, 0.1)',
+                          color: wh.activo ? 'var(--color-success)' : 'var(--color-text-secondary)',
+                          border: `1px solid ${wh.activo ? 'rgba(47, 125, 79, 0.3)' : 'var(--color-border)'}`
                         }}
                       >
-                        {wh.activo ? '● ACTIVO' : '○ INACTIVO'}
+                        {wh.activo ? 'Activo' : 'Inactivo'}
                       </span>
                     </td>
                     <td>
@@ -1068,9 +1066,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   style={{
                     padding: '10px',
                     borderRadius: '8px',
-                    background: 'rgba(7, 11, 20, 0.9)',
-                    border: '1px solid var(--spidey-border)',
-                    color: '#ffffff'
+                    background: 'var(--color-bg-surface-raised)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-main)'
                   }}
                   required
                 >
@@ -1094,20 +1092,20 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     style={{
                       padding: '12px',
                       borderRadius: '8px',
-                      background: 'rgba(7, 11, 20, 0.9)',
-                      border: '1px solid var(--spidey-border)',
-                      color: '#ffffff',
+                      background: 'var(--color-bg-surface-raised)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-main)',
                       fontSize: '1.1rem',
                       fontWeight: 700
                     }}
                   />
-                  <span style={{ fontSize: '0.74rem', color: 'var(--spidey-text-muted)' }}>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
                     Estiba estándar ({modalSelectedProd?.cajas_por_paleta ?? 1} cajas c/u)
                   </span>
                 </label>
 
-                <label style={{ display: 'grid', gap: '6px', fontWeight: 700, fontSize: '0.88rem' }}>
-                  Puchos (Cajas Sueltas)
+                <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                  Puchos (cajas sueltas)
                   <input
                     type="number"
                     min="0"
@@ -1115,16 +1113,16 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     onChange={(e) => setModalPuchos(e.target.value)}
                     required
                     style={{
-                      padding: '12px',
-                      borderRadius: '8px',
-                      background: 'rgba(7, 11, 20, 0.9)',
-                      border: '1px solid var(--spidey-border)',
-                      color: '#ffffff',
-                      fontSize: '1.1rem',
-                      fontWeight: 700
+                      padding: '10px 12px',
+                      borderRadius: '6px',
+                      background: 'var(--color-surface)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-primary)',
+                      fontSize: '1.05rem',
+                      fontWeight: 600
                     }}
                   />
-                  <span style={{ fontSize: '0.74rem', color: 'var(--spidey-text-muted)' }}>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
                     Cajas que no completan una paleta
                   </span>
                 </label>
@@ -1133,32 +1131,32 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
               {modalPreview && (
                 <div
                   style={{
-                    padding: '16px',
-                    borderRadius: '10px',
-                    background: 'rgba(0, 180, 216, 0.08)',
-                    border: '1px solid var(--spidey-border)',
+                    padding: '14px',
+                    borderRadius: '8px',
+                    background: 'var(--color-brand-soft)',
+                    border: '1px solid var(--color-border)',
                     marginBottom: '18px'
                   }}
                 >
-                  <p style={{ margin: '0 0 10px', fontWeight: 800, fontSize: '0.8rem', color: 'var(--spidey-blue)', textTransform: 'uppercase' }}>
-                    Cálculo Logístico Atómico (Fórmulas IEEE/SRS Shalom)
+                  <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-brand-deep)' }}>
+                    Cálculo logístico de conversión
                   </p>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
                     <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Cajas por Paleta:</span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Cajas por paleta:</span>
                       <strong>{modalPreview.cajasPorPaleta} cajas</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Total Cajas:</span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total cajas:</span>
                       <strong>{modalPreview.totalCajas} cajas</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Total Unidades:</span>
-                      <strong style={{ color: '#ff5252', fontSize: '1.1rem' }}>{modalPreview.totalUnidades.toLocaleString()} unid.</strong>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total unidades:</span>
+                      <strong style={{ color: 'var(--color-brand)', fontSize: '1.05rem' }}>{modalPreview.totalUnidades.toLocaleString()} unid.</strong>
                     </div>
                     {modalPreview.volumenM3 && (
                       <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--spidey-text-muted)', display: 'block' }}>Volumen:</span>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Volumen:</span>
                         <strong>{modalPreview.volumenM3} m³</strong>
                       </div>
                     )}
@@ -1241,9 +1239,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       style={{
                         padding: '10px',
                         borderRadius: '8px',
-                        background: 'rgba(7, 11, 20, 0.9)',
-                        border: '1px solid var(--spidey-border)',
-                        color: '#ffffff'
+                        background: 'var(--color-bg-surface-raised)',
+                        border: '1px solid var(--color-border)',
+                        color: 'var(--color-text-main)'
                       }}
                       required
                     >
@@ -1272,9 +1270,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                     type="checkbox"
                     checked={whActivo}
                     onChange={(e) => setWhActivo(e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--spidey-red)' }}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--color-brand)' }}
                   />
-                  <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Sede Operativa Activa</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Sede operativa activa</span>
                 </label>
               </div>
 
