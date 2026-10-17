@@ -28,9 +28,9 @@ const moduleDescriptions: Record<string, { code: string; desc: string }> = {
     code: 'MOD-02',
     desc: 'Control de stock físico en almacenes, paletizado, mermas y Kardex.'
   },
-  ordenes: {
+  movimientos: {
     code: 'MOD-03',
-    desc: 'Compras internacionales, contenedores marítimos y listas de empaque.'
+    desc: 'Transferencias entre áreas y salidas definitivas fuera de la empresa.'
   },
   recepciones: {
     code: 'MOD-04',
@@ -40,8 +40,16 @@ const moduleDescriptions: Record<string, { code: string; desc: string }> = {
     code: 'MOD-05',
     desc: 'Conteo cíclico, auditorías periódicas e índice de exactitud ERI.'
   },
-  usuarios: {
+  ordenes: {
     code: 'MOD-06',
+    desc: 'Planificación de compras, proyecciones de consumo y órdenes por producto.'
+  },
+  contenedores: {
+    code: 'MOD-07',
+    desc: 'Cubicaje de contenedores marítimos (20FT/40FT/LCL) y seguimiento logístico.'
+  },
+  usuarios: {
+    code: 'MOD-08',
     desc: 'Administración de usuarios, seguridad RBAC y bitácora de auditoría.'
   }
 }
@@ -49,11 +57,15 @@ const moduleDescriptions: Record<string, { code: string; desc: string }> = {
 export function DashboardPage({
   profile,
   onOpenProducts,
-  onOpenInventory
+  onOpenInventory,
+  onOpenMovements,
+  onOpenAudits
 }: {
   profile: UserProfile | null
   onOpenProducts: () => void
   onOpenInventory: () => void
+  onOpenMovements?: () => void
+  onOpenAudits?: () => void
 }) {
   const [stats, setStats] = useState<OverviewStats>({
     totalProducts: 0,
@@ -276,12 +288,20 @@ export function DashboardPage({
         <div className="module-summaries-grid">
           {availableModules.map((module) => {
             const meta = moduleDescriptions[module.key]
-            const isReady = module.key === 'productos' || module.key === 'inventario'
+            const isReady =
+              module.key === 'productos' ||
+              module.key === 'inventario' ||
+              module.key === 'movimientos' ||
+              module.key === 'auditorias'
             const onOpen =
               module.key === 'productos'
                 ? onOpenProducts
                 : module.key === 'inventario'
                 ? onOpenInventory
+                : module.key === 'movimientos'
+                ? onOpenMovements
+                : module.key === 'auditorias'
+                ? onOpenAudits
                 : undefined
 
             return (

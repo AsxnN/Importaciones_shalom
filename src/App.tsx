@@ -1,28 +1,30 @@
 import { useState } from 'react'
 import { useAuth } from './auth/AuthProvider'
 import { ThemeToggle } from './lib/ThemeToggle'
-import { canAccess, modules } from './lib/roles'
+import { canAccess } from './lib/roles'
+import { AuditsPage } from './pages/AuditsPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { InventoryPage } from './pages/InventoryPage'
 import { LoginPage } from './pages/LoginPage'
+import { MovementsPage } from './pages/MovementsPage'
 import { ProductsPage } from './pages/ProductsPage'
 
 export default function App() {
   const { loading, user, profile, signOut } = useAuth()
-  const [section, setSection] = useState<'dashboard' | 'productos' | 'inventario'>('dashboard')
+  const [section, setSection] = useState<'dashboard' | 'productos' | 'inventario' | 'movimientos' | 'auditorias'>('dashboard')
 
   if (loading) return <main className="screen-message">Cargando sesión…</main>
   if (!user) return <LoginPage />
-
-  const allowedModules = modules.filter((m) =>
-    canAccess(profile, m.permission, m.roles)
-  )
 
   const breadcrumbText =
     section === 'productos'
       ? 'Maestros y empaque'
       : section === 'inventario'
       ? 'Inventario y almacenes'
+      : section === 'movimientos'
+      ? 'Movimientos y transferencias'
+      : section === 'auditorias'
+      ? 'Auditorías RFID (ERI)'
       : 'Resumen operativo'
 
   return (
@@ -74,33 +76,73 @@ export default function App() {
               onClick={() => setSection('inventario')}
             >
               <span className="sidebar-nav-code">02</span>
-              <span>Inventario y Kardex</span>
+              <span>Inventario y almacenes</span>
             </button>
 
-            {/* Módulos futuros accesibles según permisos del usuario */}
-            {allowedModules
-              .filter((m) => m.key !== 'productos' && m.key !== 'inventario')
-              .map((m) => {
-                const codeMap: Record<string, string> = {
-                  ordenes: '03',
-                  recepciones: '04',
-                  auditorias: '05',
-                  usuarios: '06'
-                }
-                return (
-                  <button
-                    key={m.key}
-                    type="button"
-                    className="sidebar-nav-item"
-                    disabled
-                    title="Módulo en desarrollo"
-                  >
-                    <span className="sidebar-nav-code">{codeMap[m.key] ?? '00'}</span>
-                    <span>{m.name}</span>
-                    <span className="sidebar-nav-tag">Pronto</span>
-                  </button>
-                )
-              })}
+            <button
+              type="button"
+              className={`sidebar-nav-item ${section === 'movimientos' ? 'active' : ''}`}
+              onClick={() => setSection('movimientos')}
+            >
+              <span className="sidebar-nav-code">03</span>
+              <span>Movimientos y transferencias</span>
+            </button>
+
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              disabled
+              title="Recepción de mercadería nueva con RFID/NFC"
+            >
+              <span className="sidebar-nav-code">04</span>
+              <span>Recepciones RFID</span>
+              <span className="sidebar-nav-tag">Pronto</span>
+            </button>
+
+            {/* Módulo 05: Auditorías RFID (ERI) */}
+            {canAccess(profile, 'AUDITORIAS.VER', ['ADMINISTRADOR', 'AUDITOR']) && (
+              <button
+                type="button"
+                className={`sidebar-nav-item ${section === 'auditorias' ? 'active' : ''}`}
+                onClick={() => setSection('auditorias')}
+              >
+                <span className="sidebar-nav-code">05</span>
+                <span>Auditorías RFID (ERI)</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              disabled
+              title="Planificación de compras y proyecciones de importación"
+            >
+              <span className="sidebar-nav-code">06</span>
+              <span>Órdenes y proyecciones</span>
+              <span className="sidebar-nav-tag">Pronto</span>
+            </button>
+
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              disabled
+              title="Control de cubicaje y seguimiento de contenedores"
+            >
+              <span className="sidebar-nav-code">07</span>
+              <span>Control de contenedores</span>
+              <span className="sidebar-nav-tag">Pronto</span>
+            </button>
+
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              disabled
+              title="Administración de usuarios, roles y permisos"
+            >
+              <span className="sidebar-nav-code">08</span>
+              <span>Usuarios y permisos</span>
+              <span className="sidebar-nav-tag">Pronto</span>
+            </button>
           </nav>
         </div>
 
@@ -149,11 +191,17 @@ export default function App() {
             <ProductsPage onBack={() => setSection('dashboard')} />
           ) : section === 'inventario' ? (
             <InventoryPage onBack={() => setSection('dashboard')} />
+          ) : section === 'movimientos' ? (
+            <MovementsPage onBack={() => setSection('dashboard')} />
+          ) : section === 'auditorias' ? (
+            <AuditsPage onBack={() => setSection('dashboard')} />
           ) : (
             <DashboardPage
               profile={profile}
               onOpenProducts={() => setSection('productos')}
               onOpenInventory={() => setSection('inventario')}
+              onOpenMovements={() => setSection('movimientos')}
+              onOpenAudits={() => setSection('auditorias')}
             />
           )}
         </main>
