@@ -93,6 +93,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([])
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<number | null>(null)
   const [inventory, setInventory] = useState<InventoryItem[]>([])
+  const [showZeroStock, setShowZeroStock] = useState<boolean>(false)
   const [movements, setMovements] = useState<Movement[]>([])
   const [allProducts, setAllProducts] = useState<ProductOption[]>([])
   
@@ -383,6 +384,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     if (selectedWarehouseId !== null) {
+      setShowZeroStock(false)
       void loadWarehouseInventory(selectedWarehouseId)
     }
   }, [selectedWarehouseId])
@@ -390,7 +392,28 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
   // Almacén actualmente seleccionado
   const selectedWarehouse = warehouses.find((w) => w.id_almacen === selectedWarehouseId)
 
-  // Cálculos consolidados del almacén usando paletas físicas reales
+  // Separar productos con existencias activas de los que tienen stock 0 y sin paletas físicas en este almacén
+  const { activeItems, zeroStockItems } = useMemo(() => {
+    const active: InventoryItem[] = []
+    const zero: InventoryItem[] = []
+
+    inventory.forEach((item) => {
+      const stock = Number(item.stock_real) || 0
+      const hasPallets = activePallets.some((p) => p.id_producto === item.id_producto)
+      if (stock > 0 || hasPallets) {
+        active.push(item)
+      } else {
+        zero.push(item)
+      }
+    })
+
+    return { activeItems: active, zeroStockItems: zero }
+  }, [inventory, activePallets])
+
+  // Lista visible de inventario según el filtro
+  const displayedInventory = showZeroStock ? inventory : activeItems
+
+  // Cálculos consolidados del almacén usando existencias activas y paletas físicas reales
   const summary = useMemo(() => {
     let totalUnidades = 0
     let totalVolumenM3 = 0
@@ -402,7 +425,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       .filter((p) => p.tipo_paleta === 'PUCHO')
       .reduce((acc, p) => acc + (Number(p.cantidad_paquetes) || 1), 0)
 
-    inventory.forEach((item) => {
+    activeItems.forEach((item) => {
       const stock = Number(item.stock_real) || 0
       totalUnidades += stock
 
@@ -428,9 +451,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       totalCajasPuchos,
       totalVolumenM3: Number(totalVolumenM3.toFixed(3)),
       pctOcupado: Math.min(100, Number(pctOcupado.toFixed(1))),
-      itemsCount: inventory.length
+      itemsCount: activeItems.length
     }
-  }, [inventory, selectedWarehouse, activePallets])
+  }, [activeItems, selectedWarehouse, activePallets])
 
 
   // Producto seleccionado en el modal de ajuste
@@ -881,6 +904,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       >
         {warehouses.map((wh) => {
           const isSelected = wh.id_almacen === selectedWarehouseId
+          const tipoLabel = wh.tipo ? wh.tipo.charAt(0).toUpperCase() + wh.tipo.slice(1).toLowerCase() : 'Almacén'
           return (
             <button
               key={wh.id_almacen}
@@ -890,9 +914,9 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 textAlign: 'left',
                 padding: '16px 18px',
                 borderRadius: '8px',
-                border: isSelected ? '1px solid var(--color-accent-amber)' : '1px solid var(--color-border)',
-                background: isSelected ? 'var(--color-bg-surface-raised)' : 'var(--color-bg-surface)',
-                boxShadow: isSelected ? '0 0 0 1px var(--color-accent-amber)' : 'none',
+                border: isSelected ? '2px solid var(--color-brand)' : '1px solid var(--color-border)',
+                background: isSelected ? 'var(--color-brand-soft)' : 'var(--color-surface)',
+                boxShadow: 'none',
                 opacity: wh.activo ? 1 : 0.6,
                 cursor: 'pointer'
               }}
@@ -900,23 +924,22 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span
                   style={{
-                    fontSize: '0.72rem',
-                    fontFamily: 'monospace',
-                    fontWeight: 700,
-                    color: isSelected ? 'var(--color-accent-amber)' : 'var(--color-tech-sky)',
-                    textTransform: 'uppercase'
+                    fontSize: '0.74rem',
+                    fontWeight: 600,
+                    color: isSelected ? 'var(--color-brand-deep)' : 'var(--color-text-secondary)',
+                    textTransform: 'none'
                   }}
                 >
-                  SEDE #{wh.id_almacen} · {wh.tipo} {!wh.activo && '(INACTIVO)'} {wh.prefijo_rfid ? `· TAG: ${wh.prefijo_rfid}` : ''}
+                  {tipoLabel} {!wh.activo && '(Inactivo)'} {wh.prefijo_rfid ? `· Tag: ${wh.prefijo_rfid}` : ''}
                 </span>
                 <span style={{ fontSize: '1.2rem' }}>
                   {wh.tipo === 'PRINCIPAL' ? '🏢' : wh.tipo === 'TIENDA' ? '🏪' : '⚠️'}
                 </span>
               </div>
-              <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--color-text-main)', margin: '6px 0 4px' }}>
+              <strong style={{ display: 'block', fontSize: '1.05rem', color: 'var(--color-text-primary)', margin: '6px 0 4px' }}>
                 {wh.nombre}
               </strong>
-              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
                 Capacidad nominal: {wh.capacidad_m3 ?? '—'} m³
               </span>
             </button>
@@ -1040,7 +1063,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
             <div className="stat-box">
               <span>Artículos / SKUs</span>
               <strong style={{ fontSize: '1.45rem', color: 'var(--color-brand)' }}>{summary.itemsCount}</strong>
-              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Registrados en este almacén</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>Con existencias activas</span>
             </div>
           </div>
         </div>
@@ -1053,7 +1076,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           type="button"
           onClick={() => setCurrentTab('stock')}
         >
-          Existencias y Paletizado ({inventory.length})
+          Existencias y Paletizado ({activeItems.length})
         </button>
         <button
           className={currentTab === 'paletas' ? 'active' : ''}
@@ -1094,15 +1117,67 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
         <div className="panel" style={{ padding: '20px' }}>
           {loadingStock ? (
             <p className="muted">Cargando inventario táctico…</p>
-          ) : inventory.length === 0 ? (
+          ) : displayedInventory.length === 0 ? (
             <div className="empty-state" style={{ textAlign: 'center', padding: '36px' }}>
-              <p style={{ fontSize: '1.2rem', margin: '0 0 8px' }}>📦 Sin inventario en {selectedWarehouse?.nombre}</p>
+              <p style={{ fontSize: '1.2rem', margin: '0 0 8px' }}>📦 Sin existencias físicas en {selectedWarehouse?.nombre}</p>
               <p className="muted" style={{ margin: 0 }}>
-                Aún no se ha registrado stock para esta sede. Puedes realizar un ingreso manual con el botón "+ Ingresar / Ajustar Stock".
+                {zeroStockItems.length > 0
+                  ? `Todas las paletas y unidades han sido trasladadas o despachadas fuera de este almacén (${zeroStockItems.length} SKUs con balance 0).`
+                  : 'Aún no se ha registrado stock para este almacén. Puedes realizar un ingreso con el botón "+ Ingresar / Ajustar Stock".'}
               </p>
+              {zeroStockItems.length > 0 && !showZeroStock && (
+                <div style={{ marginTop: '16px' }}>
+                  <button
+                    type="button"
+                    className="btn-detail"
+                    onClick={() => setShowZeroStock(true)}
+                  >
+                    👁️ Ver {zeroStockItems.length} {zeroStockItems.length === 1 ? 'producto sin existencias en este almacén' : 'productos sin existencias en este almacén'}
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="table-wrap">
+              {zeroStockItems.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: '14px',
+                    padding: '8px 14px',
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: '6px',
+                    flexWrap: 'wrap',
+                    gap: '8px'
+                  }}
+                >
+                  <span style={{ fontSize: '0.86rem', color: 'var(--color-text-secondary)' }}>
+                    Mostrando <strong>{displayedInventory.length}</strong> {displayedInventory.length === 1 ? 'producto con existencias físicas' : 'productos con existencias físicas'} en {selectedWarehouse?.nombre}.
+                  </span>
+                  <label
+                    style={{
+                      fontSize: '0.84rem',
+                      color: 'var(--color-text-primary)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      userSelect: 'none'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showZeroStock}
+                      onChange={(e) => setShowZeroStock(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span>Mostrar productos agotados / sin existencias ({zeroStockItems.length})</span>
+                  </label>
+                </div>
+              )}
               <table>
                 <thead>
                   <tr>
@@ -1117,7 +1192,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {inventory.map((item) => {
+                  {displayedInventory.map((item) => {
                     const stock = Number(item.stock_real) || 0
                     const r = Array.isArray(item.producto?.regla_empaque)
                       ? item.producto.regla_empaque[0]
@@ -1596,7 +1671,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                         type="text"
                         value={modalUidTag}
                         onChange={(e) => setModalUidTag(e.target.value.toUpperCase())}
-                        placeholder={`Ej. ${selectedWarehouse?.prefijo_rfid || 'ALMPRI'}00001`}
+                        placeholder={`Ej. ${selectedWarehouse?.prefijo_rfid || 'IMP'}00001`}
                         required
                         style={{
                           fontFamily: 'monospace',
@@ -1828,7 +1903,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                         setWhPrefijoCustom(true)
                         setWhPrefijo(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))
                       }}
-                      placeholder="Ej. ALMPRI, TIECEN, MER"
+                      placeholder="Ej. IMP, STO, ABA, CON"
                       style={{ textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}
                       required
                     />

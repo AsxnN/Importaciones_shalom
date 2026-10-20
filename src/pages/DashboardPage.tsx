@@ -59,13 +59,19 @@ export function DashboardPage({
   onOpenProducts,
   onOpenInventory,
   onOpenMovements,
-  onOpenAudits
+  onOpenReceptions,
+  onOpenAudits,
+  onOpenProjections,
+  onOpenUsers
 }: {
   profile: UserProfile | null
   onOpenProducts: () => void
   onOpenInventory: () => void
   onOpenMovements?: () => void
+  onOpenReceptions?: () => void
   onOpenAudits?: () => void
+  onOpenProjections?: () => void
+  onOpenUsers?: () => void
 }) {
   const [stats, setStats] = useState<OverviewStats>({
     totalProducts: 0,
@@ -292,7 +298,10 @@ export function DashboardPage({
               module.key === 'productos' ||
               module.key === 'inventario' ||
               module.key === 'movimientos' ||
-              module.key === 'auditorias'
+              module.key === 'recepciones' ||
+              module.key === 'auditorias' ||
+              module.key === 'ordenes' ||
+              module.key === 'usuarios'
             const onOpen =
               module.key === 'productos'
                 ? onOpenProducts
@@ -300,8 +309,14 @@ export function DashboardPage({
                 ? onOpenInventory
                 : module.key === 'movimientos'
                 ? onOpenMovements
+                : module.key === 'recepciones'
+                ? onOpenReceptions
                 : module.key === 'auditorias'
                 ? onOpenAudits
+                : module.key === 'ordenes'
+                ? onOpenProjections
+                : module.key === 'usuarios'
+                ? onOpenUsers
                 : undefined
 
             return (

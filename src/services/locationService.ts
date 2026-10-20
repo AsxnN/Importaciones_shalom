@@ -995,8 +995,8 @@ export const locationService = {
       .eq('id_almacen', idAlmacenDestino)
       .maybeSingle()
 
-    const prefix = whDest?.prefijo_rfid || (idAlmacenDestino === 1 ? 'ALMPRI' : idAlmacenDestino === 2 ? 'TIECEN' : idAlmacenDestino === 3 ? 'MER' : `ALM${idAlmacenDestino}`)
-    const destName = whDest?.nombre || `Sede #${idAlmacenDestino}`
+    const prefix = whDest?.prefijo_rfid || (whDest?.nombre ? whDest.nombre.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase() : `ALM${idAlmacenDestino}`)
+    const destName = whDest?.nombre || 'Almacén de destino'
 
     // C. Determinar unidades y cajas a transferir
     const prod = origTag.producto
@@ -1505,7 +1505,7 @@ export const locationService = {
         if (wh?.prefijo_rfid) prefix = wh.prefijo_rfid.trim().toUpperCase()
       } catch {}
     }
-    prefix = prefix || (warehouseId === 1 ? 'ALMPRI' : warehouseId === 2 ? 'TIECEN' : warehouseId === 3 ? 'MER' : `ALM${warehouseId}`)
+    prefix = prefix || `ALM${warehouseId}`
 
     try {
       // 2. Fallback de cliente: obtener todas las etiquetas con este prefijo
