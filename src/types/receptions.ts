@@ -9,6 +9,7 @@ export interface ReceptionReadingItem {
   tipo: PalletLoadType
   cantidad_paquetes: number
   codigo_barras?: string
+  numero_serie?: string
   notas?: string
 }
 
@@ -20,6 +21,7 @@ export interface ReceptionReadingLog {
   tipo_carga: PalletLoadType
   cantidad_paquetes: number
   cantidad_unidades: number
+  numero_serie?: string | null
   leido_en: string
   valido: boolean
   motivo_invalidez?: string | null

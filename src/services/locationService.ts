@@ -219,7 +219,12 @@ export const locationService = {
           cantidad_actual,
           estado,
           notas,
-          producto ( sku, nombre ),
+          producto (
+            sku,
+            nombre,
+            categoria ( modo_manejo ),
+            perfil_serializado ( ubicacion_permitida )
+          ),
           celda_rack ( codigo_ubicacion, tipo_ubicacion )
         `)
         .eq('id_almacen_actual', warehouseId)
@@ -232,6 +237,13 @@ export const locationService = {
             Number(p.id_celda) === 9999 + warehouseId ||
             p.notas === 'ZONA_CAMPO' ||
             p.notas?.toUpperCase().includes('CAMPO')
+
+          const prodObj = p.producto
+          const cat = Array.isArray(prodObj?.categoria) ? prodObj.categoria[0] : prodObj?.categoria
+          const ps = Array.isArray(prodObj?.perfil_serializado) ? prodObj.perfil_serializado[0] : prodObj?.perfil_serializado
+          const modoManejo = cat?.modo_manejo || (ps ? 'SERIALIZADO' : 'PALETIZADO')
+          const ubicPerm = ps?.ubicacion_permitida || (modoManejo === 'SERIALIZADO' ? 'CAMPO' : 'AMBAS')
+
           return {
             id_etiqueta: p.id_etiqueta,
             uid_tag: p.uid_tag,
@@ -246,7 +258,14 @@ export const locationService = {
             cantidad_actual: p.cantidad_actual,
             estado: p.estado,
             notas: p.notas,
-            producto: p.producto
+            producto: prodObj
+              ? {
+                  sku: prodObj.sku,
+                  nombre: prodObj.nombre,
+                  modo_manejo: modoManejo,
+                  ubicacion_permitida: ubicPerm
+                }
+              : undefined
           }
         })
 
@@ -924,34 +943,22 @@ export const locationService = {
       })
 
       if (!error && data && data.ok) {
-        this.syncLocalPalletTransfer(cleanUidOrigen, data.uid_destino, idAlmacenOrigen, idAlmacenDestino)
-        return data
+        const finalDest = data.uid_destino || data.uid_nuevo_destino || cleanUidOrigen
+        this.syncLocalPalletTransfer(cleanUidOrigen, finalDest, idAlmacenOrigen, idAlmacenDestino)
+        return {
+          ...data,
+          uid_destino: finalDest
+        }
       }
 
-      const isCollisionOrConstraint =
-        error &&
-        (error.code === '23505' ||
-          error.message?.toLowerCase().includes('duplicate key') ||
-          error.message?.toLowerCase().includes('unique constraint') ||
-          error.message?.includes('etiqueta_rfid_uid_tag_key') ||
-          error.details?.toLowerCase().includes('already exists'))
-
-      if (error && !isCollisionOrConstraint) {
-        throw error
+      if (error) {
+        console.warn(
+          `[locationService.transferPallet] RPC transferir_carga respondió con status/error: ${error.message || error.code}. Ejecutando transferencia autónoma de contingencia...`
+        )
       }
     } catch (err: any) {
-      const isCollisionOrConstraint =
-        err?.code === '23505' ||
-        err?.message?.toLowerCase().includes('duplicate key') ||
-        err?.message?.toLowerCase().includes('unique constraint') ||
-        err?.message?.includes('etiqueta_rfid_uid_tag_key') ||
-        err?.details?.toLowerCase().includes('already exists')
-
-      if (!isCollisionOrConstraint) {
-        throw err
-      }
       console.warn(
-        '[locationService.transferPallet] RPC transferir_carga colisionó con constraint único de tag. Ejecutando transferencia inteligente con resolución de unicidad...',
+        '[locationService.transferPallet] Excepción llamando RPC transferir_carga. Ejecutando transferencia autónoma de contingencia...',
         err?.message
       )
     }
@@ -962,7 +969,17 @@ export const locationService = {
     try {
       const { data: dbOrig } = await supabase
         .from('etiqueta_rfid')
-        .select('*, producto(id_producto, sku, nombre, regla_empaque(unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta))')
+        .select(`
+          *,
+          producto (
+            id_producto,
+            sku,
+            nombre,
+            categoria ( modo_manejo ),
+            perfil_serializado ( ubicacion_permitida ),
+            regla_empaque ( unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta )
+          )
+        `)
         .eq('uid_tag', cleanUidOrigen)
         .maybeSingle()
       if (dbOrig) origTag = dbOrig
@@ -1322,6 +1339,20 @@ export const locationService = {
       })
     } catch {}
 
+    // I.2 Si pertenecía a una unidad serializada, actualizar su vínculo y almacén destino
+    try {
+      if (origTag?.id_etiqueta && destEtiquetaId) {
+        await supabase
+          .from('unidad_serializada')
+          .update({
+            id_etiqueta: destEtiquetaId,
+            id_almacen: idAlmacenDestino,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id_etiqueta', origTag.id_etiqueta)
+      }
+    } catch {}
+
     // J. Sincronizar Caches Locales
     this.syncLocalPalletTransfer(cleanUidOrigen, finalUidDestino, idAlmacenOrigen, idAlmacenDestino, {
       id_producto: origTag.id_producto,
@@ -1359,6 +1390,87 @@ export const locationService = {
     const cleanTag = payload.uidTag.trim().toUpperCase()
     const fullReason = `Salida externa [${payload.tipoSalida}]: ${payload.documento ? `Doc: ${payload.documento}. ` : ''}${payload.destinatario ? `Destino: ${payload.destinatario}. ` : ''}${payload.motivo.trim()}`
 
+    // 0. Detectar si es un retiro parcial (picking de unidades/despiece) o retiro de toda la paleta
+    let currentTagQty = payload.units
+    let currentBoxes = payload.cajas
+    try {
+      const { data: dbTag } = await supabase
+        .from('etiqueta_rfid')
+        .select('cantidad_actual, cantidad_paquetes')
+        .eq('id_etiqueta', payload.palletId)
+        .maybeSingle()
+      if (dbTag && Number(dbTag.cantidad_actual) > 0) {
+        currentTagQty = Number(dbTag.cantidad_actual)
+        currentBoxes = Number(dbTag.cantidad_paquetes) || 1
+      }
+    } catch {}
+
+    const isPartial = payload.units > 0 && payload.units < currentTagQty
+
+    // CASO 1: RETIRO PARCIAL (Picking / Despiece de caja o paleta abierta)
+    if (isPartial) {
+      const remainingUnits = currentTagQty - payload.units
+      const remainingBoxes = Math.max(1, Math.round((remainingUnits / currentTagQty) * currentBoxes))
+
+      // a. Descontar unidades de inventario contable
+      try {
+        const { data: invRow } = await supabase
+          .from('inventario')
+          .select('stock_real, stock_minimo, consumo_abs')
+          .eq('id_producto', payload.productId)
+          .eq('id_almacen', payload.warehouseId)
+          .maybeSingle()
+
+        if (invRow) {
+          const nuevoStock = Math.max(0, Number(invRow.stock_real) - payload.units)
+          const nuevoConsumo = (Number(invRow.consumo_abs) || 0) + payload.units
+          const semaforo = nuevoStock <= 0 ? 'ROJO' : nuevoStock <= (invRow.stock_minimo || 0) ? 'AMARILLO' : 'VERDE'
+
+          await supabase
+            .from('inventario')
+            .update({
+              stock_real: nuevoStock,
+              consumo_abs: nuevoConsumo,
+              estado_semaforo: semaforo
+            })
+            .eq('id_producto', payload.productId)
+            .eq('id_almacen', payload.warehouseId)
+        }
+      } catch {}
+
+      // b. Registrar en Kardex movimiento RETIRO_PARCIAL
+      try {
+        await supabase.from('movimiento').insert({
+          id_etiqueta: payload.palletId,
+          id_producto: payload.productId,
+          tipo: 'RETIRO_PARCIAL',
+          cantidad_afectada: payload.units,
+          destino_almacen: null,
+          motivo: `${fullReason} (Retiro parcial / picking de ${payload.units} unid.)`
+        })
+      } catch {}
+
+      // c. Actualizar etiqueta RFID: Disminuir cantidad y convertir en PUCHO activo
+      await supabase
+        .from('etiqueta_rfid')
+        .update({
+          tipo_paleta: 'PUCHO',
+          cantidad_actual: remainingUnits,
+          cantidad_paquetes: remainingBoxes,
+          notas: `Caja/Paleta fraccionada en picking: retiradas ${payload.units} unid. Quedan ${remainingUnits} unid.`
+        })
+        .eq('id_etiqueta', payload.palletId)
+
+      // d. Actualizar en almacenamiento local si aplica
+      this.updateLocalPalletQuantity(payload.palletId, remainingUnits, remainingBoxes, payload.warehouseId)
+
+      return {
+        ok: true,
+        mensaje: `Retiro parcial exitoso: Se despacharon ${payload.units.toLocaleString()} unidades de la etiqueta [${cleanTag}]. La carga permanece activa con ${remainingUnits.toLocaleString()} unidades restantes (Pucho/Abierto).`
+      }
+    }
+
+    // CASO 2: DESPACHO COMPLETO (Se libera el tag completamente)
     // 1. Invocar RPC dar_baja_etiqueta_rfid oficial
     try {
       const { data, error: rpcErr } = await supabase.rpc('dar_baja_etiqueta_rfid', {
@@ -1952,6 +2064,23 @@ export const locationService = {
     }
 
     return newPallet
+  },
+
+  updateLocalPalletQuantity(palletId: number, newUnits: number, newBoxes: number, warehouseId: number): void {
+    const palletsKey = `${STORAGE_PREFIX}pallets_${warehouseId}`
+    try {
+      const raw = localStorage.getItem(palletsKey)
+      if (raw) {
+        const pallets: PalletRecord[] = JSON.parse(raw)
+        const target = pallets.find((p) => Number(p.id_etiqueta) === Number(palletId))
+        if (target) {
+          target.cantidad_actual = newUnits
+          target.cantidad_paquetes = newBoxes
+          target.tipo_paleta = 'PUCHO'
+          localStorage.setItem(palletsKey, JSON.stringify(pallets))
+        }
+      }
+    } catch {}
   },
 
   saveLocalPalletDecommission(palletId: number, warehouseId: number, uidTag?: string): boolean {

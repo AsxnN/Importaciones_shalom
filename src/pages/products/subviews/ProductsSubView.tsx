@@ -1,7 +1,16 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import { logCatalogChange } from '../../../lib/audit'
-import { supabase } from '../../../lib/supabase'
-import { getProductRule, type Category, type Product, type Rule } from '../types'
+import { productoRepository } from '../repositories/ProductRepository'
+import { getEstrategiaManejo } from '../strategies/RegistroEstrategias'
+import {
+  getProductRule,
+  getProductSerialProfile,
+  type Category,
+  type PackingFormData,
+  type Product,
+  type Rule,
+  type SerializedFormData
+} from '../types'
 
 type Props = {
   products: Product[]
@@ -24,7 +33,7 @@ export function ProductsSubView({
   const [editing, setEditing] = useState<Product | null>(null)
   const [saving, setSaving] = useState(false)
 
-  // 1. Campos del Producto
+  // 1. Campos Generales del Producto
   const [sku, setSku] = useState('')
   const [nombre, setNombre] = useState('')
   const [idCategoria, setIdCategoria] = useState('')
@@ -34,26 +43,41 @@ export function ProductsSubView({
   const [clasificacionAbc, setClasificacionAbc] = useState('B')
   const [activo, setActivo] = useState(true)
 
-  // 2. Campos de Empaque y Paletizado integrados
+  // 2. Modo de manejo detectado según categoría seleccionada
+  const selectedCategory = useMemo(() => {
+    return categories.find((c) => String(c.id_categoria) === idCategoria) || null
+  }, [categories, idCategoria])
+
+  const currentModo = selectedCategory?.modo_manejo || 'PALETIZADO'
+  const isSerializado = currentModo === 'SERIALIZADO'
+
+  // 3. Campos específicos: MODO PALETIZADO
   const [unidadesPorCaja, setUnidadesPorCaja] = useState('1')
   const [cajasPorCamada, setCajasPorCamada] = useState('1')
   const [numeroCamadas, setNumeroCamadas] = useState('1')
   const [permitePuchos, setPermitePuchos] = useState(true)
-
   const [largoCm, setLargoCm] = useState('')
   const [anchoCm, setAnchoCm] = useState('')
   const [altoCm, setAltoCm] = useState('')
   const [pesoCajaKg, setPesoCajaKg] = useState('')
-
   const [notasArmado, setNotasArmado] = useState('')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [currentImagePath, setCurrentImagePath] = useState<string | null>(null)
+
+  // 4. Campos específicos: MODO SERIALIZADO
+  const [serialPesoKg, setSerialPesoKg] = useState('')
+  const [serialLargoCm, setSerialLargoCm] = useState('')
+  const [serialAnchoCm, setSerialAnchoCm] = useState('')
+  const [serialAltoCm, setSerialAltoCm] = useState('')
+  const [serialRequiereIzaje, setSerialRequiereIzaje] = useState(false)
+  const [serialUbicacion, setSerialUbicacion] = useState<'CAMPO' | 'RACK' | 'AMBAS'>('AMBAS')
+  const [serialNotas, setSerialNotas] = useState('')
 
   // Filtros de tabla
   const [filterCategory, setFilterCategory] = useState('')
   const [search, setSearch] = useState('')
 
-  // Cálculos en tiempo real
+  // Cálculos en tiempo real para paletizado
   const metrics = useMemo(() => {
     const cCamada = Math.max(1, Number(cajasPorCamada) || 1)
     const nCamadas = Math.max(1, Number(numeroCamadas) || 1)
@@ -81,6 +105,14 @@ export function ProductsSubView({
       pesoSugeridoKg
     }
   }, [cajasPorCamada, numeroCamadas, unidadesPorCaja, largoCm, anchoCm, altoCm, pesoCajaKg])
+
+  // Volumen calculado para serializado
+  const serialVolumenM3 = useMemo(() => {
+    const l = Number(serialLargoCm) || 0
+    const w = Number(serialAnchoCm) || 0
+    const h = Number(serialAltoCm) || 0
+    return l > 0 && w > 0 && h > 0 ? (l * w * h) / 1000000 : null
+  }, [serialLargoCm, serialAnchoCm, serialAltoCm])
 
   const filtered = useMemo(() => {
     return products.filter((p) => {
@@ -113,6 +145,7 @@ export function ProductsSubView({
     setClasificacionAbc('B')
     setActivo(true)
 
+    // Reset Paletizado
     setUnidadesPorCaja('1')
     setCajasPorCamada('1')
     setNumeroCamadas('1')
@@ -125,12 +158,53 @@ export function ProductsSubView({
     setImageFile(null)
     setCurrentImagePath(null)
 
+    // Reset Serializado
+    setSerialPesoKg('')
+    setSerialLargoCm('')
+    setSerialAnchoCm('')
+    setSerialAltoCm('')
+    setSerialRequiereIzaje(false)
+    setSerialUbicacion('AMBAS')
+    setSerialNotas('')
+
     setShowForm(false)
   }
 
-  function startCreate() {
+  function calcularSiguienteSkuLocal(): string {
+    let maxNum = -1
+    const regex = /^SKU-(\d+)$/i
+
+    for (const p of products) {
+      if (!p.sku) continue
+      const match = p.sku.trim().match(regex)
+      if (match) {
+        const num = parseInt(match[1], 10)
+        if (!isNaN(num) && num > maxNum) {
+          maxNum = num
+        }
+      }
+    }
+
+    const nextNum = maxNum >= 0 ? maxNum + 1 : 0
+    return `SKU-${String(nextNum).padStart(5, '0')}`
+  }
+
+  async function startCreate() {
     resetForm()
+    // 1. Asignar de inmediato el correlativo SKU-00000 local
+    const localNextSku = calcularSiguienteSkuLocal()
+    setSku(localNextSku)
     setShowForm(true)
+
+    // 2. Validar con base de datos por si hubo creaciones concurrentes
+    try {
+      const dbNextSku = await productoRepository.obtenerSiguienteSku()
+      if (dbNextSku) {
+        setSku(dbNextSku)
+      }
+    } catch {
+      // Mantiene el calculado localmente
+    }
   }
 
   function startEdit(p: Product) {
@@ -144,7 +218,7 @@ export function ProductsSubView({
     setClasificacionAbc(p.clasificacion_abc ?? 'B')
     setActivo(p.activo !== false)
 
-    // Cargar regla de empaque asociada si existe
+    // Cargar perfil según corresponda
     const rule: Rule | null = getProductRule(p)
     if (rule) {
       setUnidadesPorCaja(String(rule.unidades_por_caja ?? 1))
@@ -169,9 +243,28 @@ export function ProductsSubView({
       setNotasArmado('')
       setCurrentImagePath(null)
     }
+
+    const serialProfile = getProductSerialProfile(p)
+    if (serialProfile) {
+      setSerialPesoKg(serialProfile.peso_unitario_kg ? String(serialProfile.peso_unitario_kg) : '')
+      setSerialLargoCm(serialProfile.largo_cm ? String(serialProfile.largo_cm) : '')
+      setSerialAnchoCm(serialProfile.ancho_cm ? String(serialProfile.ancho_cm) : '')
+      setSerialAltoCm(serialProfile.alto_cm ? String(serialProfile.alto_cm) : '')
+      setSerialRequiereIzaje(serialProfile.requiere_equipo_izaje ?? false)
+      setSerialUbicacion(serialProfile.ubicacion_permitida || 'AMBAS')
+      setSerialNotas(serialProfile.notas ?? '')
+    } else {
+      setSerialPesoKg(p.peso_unitario_kg ? String(p.peso_unitario_kg) : '')
+      setSerialLargoCm('')
+      setSerialAnchoCm('')
+      setSerialAltoCm('')
+      setSerialRequiereIzaje(false)
+      setSerialUbicacion('AMBAS')
+      setSerialNotas('')
+    }
+
     setImageFile(null)
     setShowForm(true)
-
     window.scrollTo({ top: 100, behavior: 'smooth' })
   }
 
@@ -181,116 +274,80 @@ export function ProductsSubView({
     const nombreClean = nombre.trim()
 
     if (!skuClean || !nombreClean) {
-      onError('El SKU y el Nombre del producto son obligatorios.')
+      onError('El SKU y el nombre del producto son obligatorios.')
       return
     }
 
     setSaving(true)
     onError(null)
 
-    // 1. Guardar o Actualizar en tabla 'producto'
-    const productPayload = {
-      sku: skuClean,
-      nombre: nombreClean,
-      descripcion: nombreClean,
-      id_categoria: idCategoria ? Number(idCategoria) : null,
-      unidad_medida: unidadMedida.trim() || 'UNIDAD',
-      peso_unitario_kg: pesoUnitario ? Number(pesoUnitario) : null,
-      costo_unitario: costoUnitario ? Number(costoUnitario) : null,
-      clasificacion_abc: clasificacionAbc || null,
-      activo
-    }
-
-    let targetProductId = editing?.id_producto
-
-    if (editing) {
-      const { error: prodErr } = await supabase
-        .from('producto')
-        .update(productPayload)
-        .eq('id_producto', editing.id_producto)
-
-      if (prodErr) {
-        setSaving(false)
-        onError(prodErr.message)
-        return
+    try {
+      // 1. Guardar o actualizar registro base en producto
+      const productPayload: Partial<Product> = {
+        sku: skuClean,
+        nombre: nombreClean,
+        descripcion: nombreClean,
+        id_categoria: idCategoria ? Number(idCategoria) : null,
+        unidad_medida: unidadMedida.trim() || 'UNIDAD',
+        peso_unitario_kg: isSerializado
+          ? (serialPesoKg ? Number(serialPesoKg) : null)
+          : (pesoUnitario ? Number(pesoUnitario) : null),
+        costo_unitario: costoUnitario ? Number(costoUnitario) : null,
+        clasificacion_abc: clasificacionAbc || null,
+        activo
       }
-    } else {
-      const { data: newProd, error: prodErr } = await supabase
-        .from('producto')
-        .insert(productPayload)
-        .select('id_producto')
-        .single()
 
-      if (prodErr || !newProd) {
-        setSaving(false)
-        onError(prodErr?.message ?? 'No se pudo crear el producto.')
-        return
+      if (editing?.id_producto) {
+        productPayload.id_producto = editing.id_producto
       }
-      targetProductId = newProd.id_producto
-    }
 
-    // 2. Subida opcional de imagen al bucket 'esquemas-empaque'
-    let finalImagePath = currentImagePath
-    if (imageFile && targetProductId) {
-      const fileExt = imageFile.name.split('.').pop()
-      const fileName = `${targetProductId}_${Date.now()}.${fileExt}`
-      const storagePath = `patrones/${fileName}`
+      const savedProduct = await productoRepository.guardar(productPayload)
+      const targetId = savedProduct.id_producto
 
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('esquemas-empaque')
-        .upload(storagePath, imageFile, {
-          cacheControl: '3600',
-          upsert: false
-        })
+      // 2. Persistir perfil específico a través de la Estrategia correspondiente
+      const strategy = getEstrategiaManejo(currentModo)
 
-      if (uploadError) {
-        onError(`Producto guardado, pero falló la subida del diagrama: ${uploadError.message}`)
-      } else if (uploadData) {
-        finalImagePath = uploadData.path
+      if (isSerializado) {
+        const serialData: SerializedFormData = {
+          peso_unitario_kg: serialPesoKg,
+          largo_cm: serialLargoCm,
+          ancho_cm: serialAnchoCm,
+          alto_cm: serialAltoCm,
+          requiere_equipo_izaje: serialRequiereIzaje,
+          ubicacion_permitida: serialUbicacion,
+          atributos: {},
+          notas: serialNotas
+        }
+        await strategy.guardarPerfil(targetId, serialData)
+      } else {
+        const packingData: PackingFormData = {
+          unidades_por_caja: unidadesPorCaja,
+          cajas_por_camada: cajasPorCamada,
+          numero_camadas: numeroCamadas,
+          permite_puchos: permitePuchos,
+          notas_armado: notasArmado,
+          largo_caja_cm: largoCm,
+          ancho_caja_cm: anchoCm,
+          alto_caja_cm: altoCm,
+          peso_caja_kg: pesoCajaKg
+        }
+        await strategy.guardarPerfil(targetId, packingData, imageFile)
       }
-    }
 
-    // 3. Guardar o Actualizar en tabla 'regla_empaque' vinculada a id_producto
-    const cCamada = Math.max(1, Number(cajasPorCamada) || 1)
-    const nCamadas = Math.max(1, Number(numeroCamadas) || 1)
-    const uCaja = Math.max(1, Number(unidadesPorCaja) || 1)
-
-    const packingPayload = {
-      id_producto: Number(targetProductId),
-      unidades_por_caja: uCaja,
-      cajas_por_camada: cCamada,
-      numero_camadas: nCamadas,
-      cajas_por_camita: cCamada,
-      camitas_por_paleta: nCamadas,
-      permite_puchos: permitePuchos,
-      notas_armado: notasArmado.trim() || null,
-      imagen_armado_path: finalImagePath,
-      largo_caja_cm: largoCm ? Number(largoCm) : null,
-      ancho_caja_cm: anchoCm ? Number(anchoCm) : null,
-      alto_caja_cm: altoCm ? Number(altoCm) : null,
-      peso_caja_kg: pesoCajaKg ? Number(pesoCajaKg) : null,
-      volumen_caja_m3: metrics.volCajaM3 ? Number(metrics.volCajaM3.toFixed(4)) : null,
-      volumen_total_m3: metrics.volPaletaM3 ? Number(metrics.volPaletaM3.toFixed(4)) : null
-    }
-
-    const { error: packingErr } = await supabase
-      .from('regla_empaque')
-      .upsert(packingPayload, { onConflict: 'id_producto' })
-
-    setSaving(false)
-
-    if (packingErr) {
-      onError(`Producto guardado, pero hubo un error en su empaque: ${packingErr.message}`)
-    } else {
       await logCatalogChange({
         tabla: 'producto',
         operacion: editing ? 'UPDATE' : 'INSERT',
-        id_registro: targetProductId ?? 0,
-        datos_nuevos: { producto: productPayload, empaque: packingPayload }
+        id_registro: Number(targetId),
+        datos_nuevos: { producto: productPayload, modo: currentModo }
       })
 
       resetForm()
       onRefresh()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error inesperado al guardar el producto.'
+      onError(msg)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -298,38 +355,81 @@ export function ProductsSubView({
     <section className="panel master-section">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
         <div>
-          <h3 style={{ margin: 0 }}>Productos y Empaque</h3>
+          <h3 style={{ margin: 0 }}>Productos y Modos de Manejo</h3>
           <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.85rem' }}>
-            Módulo integral: administra cada artículo junto con sus especificaciones de empaque, dimensiones y estibado de paletas.
+            Administra los productos del catálogo adaptando sus especificaciones técnicas según su modo de manejo (paletizado o serializado).
           </p>
         </div>
         {!showForm && (
           <button className="button" style={{ margin: 0 }} type="button" onClick={startCreate}>
-            + Registrar Producto y Empaque
+            + Registrar producto
           </button>
         )}
       </div>
 
-      {/* Formulario Unificado */}
+      {/* Formulario Unificado Dinámico */}
       {showForm && (
-        <div style={{ marginTop: '20px', padding: '24px', background: 'var(--color-bg-surface-raised)', border: '1px solid var(--color-border)', borderRadius: '8px' }}>
-          <h4 style={{ margin: '0 0 16px', fontSize: '1.1rem', color: 'var(--color-text-main)' }}>
-            {editing ? `Editar Producto y Ficha de Empaque: ${editing.sku}` : 'Registrar Nuevo Producto y Ficha de Empaque'}
-          </h4>
+        <div style={{ marginTop: '20px', padding: '24px', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: '6px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h4 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--color-text-primary)' }}>
+              {editing ? `Editar producto: ${editing.sku}` : 'Registrar nuevo producto'}
+            </h4>
+            <span
+              className="category-pill"
+              style={{
+                background: isSerializado ? '#fef3c7' : '#e0f2fe',
+                color: isSerializado ? '#92400e' : '#0369a1',
+                borderColor: isSerializado ? '#fde68a' : '#bae6fd'
+              }}
+            >
+              Modo: {isSerializado ? 'Serializado unitario' : 'Paletizado estándar'}
+            </span>
+          </div>
 
           <form className="product-form" onSubmit={handleSave}>
-            {/* Bloque 1: Datos Generales */}
+            {/* Bloque 1: Datos Comunes */}
             <fieldset>
-              <legend>1. Datos del Producto</legend>
+              <legend>1. Datos generales del producto</legend>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
                 <label>
-                  SKU (obligatorio y único)
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>SKU (obligatorio y correlativo)</span>
+                    {!editing && (
+                      <button
+                        type="button"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--color-brand)',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          padding: 0,
+                          textDecoration: 'underline'
+                        }}
+                        onClick={async () => {
+                          const local = calcularSiguienteSkuLocal()
+                          setSku(local)
+                          try {
+                            const remote = await productoRepository.obtenerSiguienteSku()
+                            if (remote) setSku(remote)
+                          } catch {
+                            // Mantiene local
+                          }
+                        }}
+                      >
+                        ⚡ Siguiente SKU
+                      </button>
+                    )}
+                  </div>
                   <input
                     value={sku}
-                    onChange={(e) => setSku(e.target.value)}
-                    placeholder="Ej. SKU-1001"
+                    onChange={(e) => setSku(e.target.value.toUpperCase())}
+                    placeholder="Ej. SKU-00000"
                     required
                   />
+                  <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block', marginTop: '2px' }}>
+                    Formato: SKU-00000 en adelante
+                  </span>
                 </label>
 
                 <label>
@@ -337,7 +437,7 @@ export function ProductsSubView({
                   <input
                     value={nombre}
                     onChange={(e) => setNombre(e.target.value)}
-                    placeholder="Ej. Cinta de Embalaje 2x100m"
+                    placeholder="Ej. Generador Diésel 5.5 kVA"
                     required
                   />
                 </label>
@@ -348,17 +448,18 @@ export function ProductsSubView({
                     <option value="">Sin categoría</option>
                     {categories.map((c) => (
                       <option key={c.id_categoria} value={String(c.id_categoria)}>
-                        {c.nombre}
+                        {c.nombre} ({c.modo_manejo || 'PALETIZADO'})
                       </option>
                     ))}
                   </select>
                 </label>
 
                 <label>
-                  Unidad de Medida
+                  Unidad de medida
                   <select value={unidadMedida} onChange={(e) => setUnidadMedida(e.target.value)}>
                     <option value="UNIDAD">UNIDAD</option>
                     <option value="PIEZA">PIEZA</option>
+                    <option value="EQUIPO">EQUIPO</option>
                     <option value="CAJA">CAJA</option>
                     <option value="ROLLO">ROLLO</option>
                     <option value="SET">SET</option>
@@ -368,17 +469,19 @@ export function ProductsSubView({
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginTop: '12px' }}>
-                <label>
-                  Peso unitario suelto (kg)
-                  <input
-                    type="number"
-                    step="0.001"
-                    min="0"
-                    value={pesoUnitario}
-                    onChange={(e) => setPesoUnitario(e.target.value)}
-                    placeholder="0.250"
-                  />
-                </label>
+                {!isSerializado && (
+                  <label>
+                    Peso unitario suelto (kg)
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      value={pesoUnitario}
+                      onChange={(e) => setPesoUnitario(e.target.value)}
+                      placeholder="0.250"
+                    />
+                  </label>
+                )}
 
                 <label>
                   Costo unitario ($)
@@ -388,12 +491,12 @@ export function ProductsSubView({
                     min="0"
                     value={costoUnitario}
                     onChange={(e) => setCostoUnitario(e.target.value)}
-                    placeholder="12.50"
+                    placeholder="120.00"
                   />
                 </label>
 
                 <label>
-                  Clasificación ABC (Pareto)
+                  Clasificación ABC
                   <select value={clasificacionAbc} onChange={(e) => setClasificacionAbc(e.target.value)}>
                     <option value="A">Clase A (Alta rotación/valor 80%)</option>
                     <option value="B">Clase B (Rotación media 15%)</option>
@@ -407,176 +510,270 @@ export function ProductsSubView({
                     checked={activo}
                     onChange={(e) => setActivo(e.target.checked)}
                   />
-                  Producto activo
+                  Producto activo en el catálogo
                 </label>
               </div>
             </fieldset>
 
-            {/* Bloque 2: Empaque y Paletizado */}
-            <fieldset style={{ marginTop: '16px' }}>
-              <legend>2. Ficha de Empaque y Esquema de Paletizado</legend>
+            {/* Bloque 2 Dinámico: Paletizado vs Serializado */}
+            {isSerializado ? (
+              <fieldset style={{ marginTop: '16px' }}>
+                <legend>2. Ficha técnica de maquinaria y equipo (Serializado unitario)</legend>
+                <p className="muted" style={{ margin: '0 0 12px', fontSize: '0.85rem' }}>
+                  Cada unidad de este producto se identificará con número de serie único y etiqueta RFID individual. No aplica regla de empaque, camadas ni puchos.
+                </p>
 
-              <div className="number-grid">
-                <label>
-                  Unidades por caja (&gt; 0)
-                  <input
-                    type="number"
-                    min="1"
-                    value={unidadesPorCaja}
-                    onChange={(e) => setUnidadesPorCaja(e.target.value)}
-                    required
-                  />
-                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px' }}>
+                  <label>
+                    Peso del equipo (kg)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={serialPesoKg}
+                      onChange={(e) => setSerialPesoKg(e.target.value)}
+                      placeholder="Ej. 185.5"
+                    />
+                  </label>
 
-                <label>
-                  Cajas por camada (total real por cama)
-                  <input
-                    type="number"
-                    min="1"
-                    value={cajasPorCamada}
-                    onChange={(e) => setCajasPorCamada(e.target.value)}
-                    required
-                  />
-                </label>
+                  <label>
+                    Largo (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={serialLargoCm}
+                      onChange={(e) => setSerialLargoCm(e.target.value)}
+                      placeholder="90.0"
+                    />
+                  </label>
 
-                <label>
-                  Camadas / Niveles por paleta
-                  <input
-                    type="number"
-                    min="1"
-                    value={numeroCamadas}
-                    onChange={(e) => setNumeroCamadas(e.target.value)}
-                    required
-                  />
-                </label>
-              </div>
+                  <label>
+                    Ancho (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={serialAnchoCm}
+                      onChange={(e) => setSerialAnchoCm(e.target.value)}
+                      placeholder="60.0"
+                    />
+                  </label>
 
-              {/* Medidas de caja */}
-              <p style={{ margin: '14px 0 6px', fontWeight: 700, fontSize: '0.86rem', color: '#187346' }}>
-                Dimensiones y Peso de la Caja (Empaque Intermedio)
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-                <label>
-                  Largo caja (cm)
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={largoCm}
-                    onChange={(e) => setLargoCm(e.target.value)}
-                    placeholder="40.0"
-                  />
-                </label>
-                <label>
-                  Ancho caja (cm)
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={anchoCm}
-                    onChange={(e) => setAnchoCm(e.target.value)}
-                    placeholder="30.0"
-                  />
-                </label>
-                <label>
-                  Alto caja (cm)
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={altoCm}
-                    onChange={(e) => setAltoCm(e.target.value)}
-                    placeholder="25.0"
-                  />
-                </label>
-                <label>
-                  Peso caja (kg)
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={pesoCajaKg}
-                    onChange={(e) => setPesoCajaKg(e.target.value)}
-                    placeholder="12.5"
-                  />
-                </label>
-              </div>
+                  <label>
+                    Alto (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={serialAltoCm}
+                      onChange={(e) => setSerialAltoCm(e.target.value)}
+                      placeholder="75.0"
+                    />
+                  </label>
+                </div>
 
-              {/* Medidas y cálculos de paleta */}
-              <p style={{ margin: '14px 0 6px', fontWeight: 600, fontSize: '0.84rem', color: 'var(--color-tech-sky)' }}>
-                Estimaciones de la Paleta Armada (Cálculo según dimensiones de caja y camadas)
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-                <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-bg-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', display: 'block' }}>Alto total estimado paleta:</span>
-                  <strong style={{ fontSize: '1rem', color: 'var(--color-tech-sky)', marginTop: '2px' }}>
-                    {metrics.altoSugeridoCm ? `${metrics.altoSugeridoCm.toFixed(1)} cm` : '—'}
-                  </strong>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-subtle)', marginTop: '2px' }}>
-                    ({altoCm || 0} cm × {numeroCamadas} camadas + 15 cm tarima)
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginTop: '12px' }}>
+                  <label>
+                    Ubicación permitida en almacén
+                    <select
+                      value={serialUbicacion}
+                      onChange={(e) => setSerialUbicacion(e.target.value as 'CAMPO' | 'RACK' | 'AMBAS')}
+                    >
+                      <option value="AMBAS">Ambas (Campo libre o rack reforzado)</option>
+                      <option value="CAMPO">Solo Campo / Piso libre (Sobredimensionado)</option>
+                      <option value="RACK">Solo Estantería Rack (Dimensiones estándar)</option>
+                    </select>
+                  </label>
+
+                  <label className="check" style={{ marginTop: '26px' }}>
+                    <input
+                      type="checkbox"
+                      checked={serialRequiereIzaje}
+                      onChange={(e) => setSerialRequiereIzaje(e.target.checked)}
+                    />
+                    Requiere equipo de izaje mecánico (grúa / montacargas pesado)
+                  </label>
+                </div>
+
+                {serialVolumenM3 && (
+                  <div className="metrics" style={{ marginTop: '12px' }}>
+                    <span>Volumen unitario: {serialVolumenM3.toFixed(3)} m³</span>
+                    <span>Dimensiones: {serialLargoCm} × {serialAnchoCm} × {serialAltoCm} cm</span>
+                    {serialPesoKg && <strong>Peso: {serialPesoKg} kg</strong>}
+                  </div>
+                )}
+
+                <label style={{ display: 'grid', gap: '6px', margin: '12px 0 0', fontWeight: 600, fontSize: '0.85rem' }}>
+                  Notas técnicas y de mantenimiento
+                  <input
+                    value={serialNotas}
+                    onChange={(e) => setSerialNotas(e.target.value)}
+                    placeholder="Ej. Requiere chequeo de aceite hidráulico antes de despacho."
+                  />
+                </label>
+              </fieldset>
+            ) : (
+              <fieldset style={{ marginTop: '16px' }}>
+                <legend>2. Ficha de empaque y esquema de paletizado</legend>
+
+                <div className="number-grid">
+                  <label>
+                    Unidades por caja (&gt; 0)
+                    <input
+                      type="number"
+                      min="1"
+                      value={unidadesPorCaja}
+                      onChange={(e) => setUnidadesPorCaja(e.target.value)}
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Cajas por camada
+                    <input
+                      type="number"
+                      min="1"
+                      value={cajasPorCamada}
+                      onChange={(e) => setCajasPorCamada(e.target.value)}
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Camadas por paleta
+                    <input
+                      type="number"
+                      min="1"
+                      value={numeroCamadas}
+                      onChange={(e) => setNumeroCamadas(e.target.value)}
+                      required
+                    />
+                  </label>
+                </div>
+
+                <p style={{ margin: '14px 0 6px', fontWeight: 600, fontSize: '0.86rem', color: 'var(--color-brand)' }}>
+                  Dimensiones y peso de la caja
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+                  <label>
+                    Largo caja (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={largoCm}
+                      onChange={(e) => setLargoCm(e.target.value)}
+                      placeholder="40.0"
+                    />
+                  </label>
+                  <label>
+                    Ancho caja (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={anchoCm}
+                      onChange={(e) => setAnchoCm(e.target.value)}
+                      placeholder="30.0"
+                    />
+                  </label>
+                  <label>
+                    Alto caja (cm)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={altoCm}
+                      onChange={(e) => setAltoCm(e.target.value)}
+                      placeholder="25.0"
+                    />
+                  </label>
+                  <label>
+                    Peso caja (kg)
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={pesoCajaKg}
+                      onChange={(e) => setPesoCajaKg(e.target.value)}
+                      placeholder="12.5"
+                    />
+                  </label>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px', marginTop: '12px' }}>
+                  <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)', display: 'block' }}>Alto total estimado paleta:</span>
+                    <strong style={{ fontSize: '1rem', color: 'var(--color-brand)', marginTop: '2px' }}>
+                      {metrics.altoSugeridoCm ? `${metrics.altoSugeridoCm.toFixed(1)} cm` : '—'}
+                    </strong>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '2px' }}>
+                      ({altoCm || 0} cm × {numeroCamadas} camadas + 15 cm tarima)
+                    </div>
+                  </div>
+
+                  <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)', display: 'block' }}>Peso total estimado paleta:</span>
+                    <strong style={{ fontSize: '1rem', color: 'var(--color-brand)', marginTop: '2px' }}>
+                      {metrics.pesoSugeridoKg ? `${metrics.pesoSugeridoKg.toFixed(1)} kg` : '—'}
+                    </strong>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', marginTop: '2px' }}>
+                      ({pesoCajaKg || 0} kg × {metrics.cajasPaleta} cajas + 25 kg tarima)
+                    </div>
                   </div>
                 </div>
 
-                <div className="stat-box" style={{ padding: '10px 14px', background: 'var(--color-bg-surface)', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', display: 'block' }}>Peso total estimado paleta:</span>
-                  <strong style={{ fontSize: '1rem', color: 'var(--color-tech-sky)', marginTop: '2px' }}>
-                    {metrics.pesoSugeridoKg ? `${metrics.pesoSugeridoKg.toFixed(1)} kg` : '—'}
-                  </strong>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-subtle)', marginTop: '2px' }}>
-                    ({pesoCajaKg || 0} kg × {metrics.cajasPaleta} cajas + 25 kg tarima)
-                  </div>
+                <label style={{ display: 'grid', gap: '6px', margin: '12px 0 0', fontWeight: 600, fontSize: '0.85rem' }}>
+                  Notas de patrón de armado (opcional)
+                  <input
+                    value={notasArmado}
+                    onChange={(e) => setNotasArmado(e.target.value)}
+                    placeholder="Ej. Traba 3x2, orientar etiquetas hacia el exterior"
+                  />
+                </label>
+
+                <label style={{ display: 'grid', gap: '6px', margin: '12px 0 0', fontWeight: 600, fontSize: '0.85rem' }}>
+                  Diagrama visual de armado (PNG, JPG, WebP)
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    onChange={handleFileChange}
+                  />
+                  {imageFile ? (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-success)' }}>
+                      Archivo nuevo: {imageFile.name}
+                    </span>
+                  ) : currentImagePath ? (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+                      Diagrama almacenado: {currentImagePath}
+                    </span>
+                  ) : null}
+                </label>
+
+                <label className="check" style={{ marginTop: '12px' }}>
+                  <input
+                    type="checkbox"
+                    checked={permitePuchos}
+                    onChange={(e) => setPermitePuchos(e.target.checked)}
+                  />
+                  Permite cajas pucho (fraccionadas en recepción)
+                </label>
+
+                <div className="metrics" style={{ marginTop: '14px' }}>
+                  <span>{cajasPorCamada} cajas/camada</span>
+                  <span>{numeroCamadas} camadas/paleta</span>
+                  <span>{metrics.cajasPaleta} cajas/paleta</span>
+                  <strong>{metrics.unidadesPaleta} unidades/paleta</strong>
+                  {metrics.volCajaM3 && <span>Volumen caja: {metrics.volCajaM3.toFixed(4)} m³</span>}
+                  {metrics.volPaletaM3 && <span>Volumen paleta: {metrics.volPaletaM3.toFixed(3)} m³</span>}
                 </div>
-              </div>
-
-              <label style={{ display: 'grid', gap: '6px', margin: '12px 0 0', fontWeight: 700, fontSize: '0.85rem' }}>
-                Notas de patrón de armado (opcional)
-                <input
-                  value={notasArmado}
-                  onChange={(e) => setNotasArmado(e.target.value)}
-                  placeholder="Ej. Traba 3x2, orientar etiquetas hacia el exterior"
-                />
-              </label>
-
-              <label style={{ display: 'grid', gap: '6px', margin: '12px 0 0', fontWeight: 700, fontSize: '0.85rem' }}>
-                Diagrama visual de armado (PNG, JPG, WebP)
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                  onChange={handleFileChange}
-                />
-                {imageFile ? (
-                  <span style={{ fontSize: '0.8rem', color: '#187346' }}>
-                    Archivo nuevo: {imageFile.name}
-                  </span>
-                ) : currentImagePath ? (
-                  <span style={{ fontSize: '0.8rem', color: '#5d6b62' }}>
-                    Diagrama almacenado: {currentImagePath}
-                  </span>
-                ) : null}
-              </label>
-
-              <label className="check" style={{ marginTop: '12px' }}>
-                <input
-                  type="checkbox"
-                  checked={permitePuchos}
-                  onChange={(e) => setPermitePuchos(e.target.checked)}
-                />
-                Permite cajas pucho (fraccionadas en recepción)
-              </label>
-
-              <div className="metrics" style={{ marginTop: '14px' }}>
-                <span>{cajasPorCamada} cajas/camada</span>
-                <span>{numeroCamadas} camadas/paleta</span>
-                <span>{metrics.cajasPaleta} cajas/paleta</span>
-                <strong>{metrics.unidadesPaleta} unidades/paleta</strong>
-                {metrics.volCajaM3 && <span>Volumen Caja: {metrics.volCajaM3.toFixed(4)} m³</span>}
-                {metrics.volPaletaM3 && <span>Volumen Paleta: {metrics.volPaletaM3.toFixed(3)} m³</span>}
-              </div>
-            </fieldset>
+              </fieldset>
+            )}
 
             <div style={{ display: 'flex', gap: '10px', marginTop: '18px' }}>
               <button className="button" style={{ margin: 0 }} disabled={saving}>
-                {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Guardar producto y empaque'}
+                {saving ? 'Guardando…' : editing ? 'Guardar cambios' : 'Guardar producto'}
               </button>
               <button className="button secondary" type="button" style={{ margin: 0 }} onClick={resetForm}>
                 Cancelar
@@ -623,7 +820,7 @@ export function ProductsSubView({
         </div>
       </div>
 
-      {/* Tabla Unificada de Productos con sus Reglas de Empaque */}
+      {/* Tabla Unificada Adaptativa según Modo de Manejo */}
       {loading ? (
         <p className="muted">Cargando productos y especificaciones…</p>
       ) : filtered.length === 0 ? (
@@ -635,18 +832,22 @@ export function ProductsSubView({
               <tr>
                 <th>SKU</th>
                 <th>Nombre / Descripción</th>
-                <th>Categoría</th>
+                <th>Categoría y Modo</th>
                 <th>U. Medida / Costo</th>
                 <th>ABC</th>
-                <th>Ficha de Empaque y Paletizado</th>
-                <th>Medidas Paleta</th>
+                <th>Especificación Técnica</th>
+                <th>Dimensiones / Cubicaje</th>
                 <th>Estado</th>
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((p) => {
+                const modoProd = p.categoria?.modo_manejo || 'PALETIZADO'
+                const esSerial = modoProd === 'SERIALIZADO'
                 const rule = getProductRule(p)
+                const serialProfile = getProductSerialProfile(p)
+
                 const cCamada = rule?.cajas_por_camada ?? rule?.cajas_por_camita ?? 0
                 const nCamadas = rule?.numero_camadas ?? rule?.camitas_por_paleta ?? 0
                 const cajasPaleta = cCamada * nCamadas
@@ -656,26 +857,54 @@ export function ProductsSubView({
                   <tr key={p.id_producto}>
                     <td><span className="sku-badge">{p.sku}</span></td>
                     <td><strong>{p.nombre ?? p.descripcion}</strong></td>
-                    <td><span className="category-pill">{p.categoria?.nombre ?? '—'}</span></td>
+                    <td>
+                      <div><span className="category-pill">{p.categoria?.nombre ?? 'Sin categoría'}</span></div>
+                      <span
+                        style={{
+                          fontSize: '0.75rem',
+                          color: esSerial ? '#92400e' : '#0369a1',
+                          fontWeight: 600,
+                          marginTop: '2px',
+                          display: 'inline-block'
+                        }}
+                      >
+                        {esSerial ? 'Serializado unitario' : 'Paletizado'}
+                      </span>
+                    </td>
                     <td>
                       <div>{p.unidad_medida ?? 'UNIDAD'}</div>
-                      <span style={{ fontSize: '0.8rem', color: '#5d6b62' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
                         {p.costo_unitario ? `$${Number(p.costo_unitario).toFixed(2)}` : '—'}
                       </span>
                     </td>
                     <td>
                       <span style={{
-                        fontWeight: 800,
-                        color: p.clasificacion_abc === 'A' ? '#187346' : p.clasificacion_abc === 'B' ? '#c27e00' : '#888'
+                        fontWeight: 700,
+                        color: p.clasificacion_abc === 'A' ? 'var(--color-success)' : p.clasificacion_abc === 'B' ? 'var(--color-warning)' : 'var(--color-text-secondary)'
                       }}>
                         {p.clasificacion_abc ?? 'B'}
                       </span>
                     </td>
                     <td>
-                      {rule ? (
+                      {esSerial ? (
+                        <div>
+                          <span style={{ fontWeight: 600, color: '#92400e' }}>Equipo individual</span>
+                          {serialProfile?.requiere_equipo_izaje && (
+                            <span
+                              className="category-pill"
+                              style={{ marginLeft: '6px', background: '#fee2e2', color: '#991b1b', fontSize: '0.7rem' }}
+                            >
+                              Requiere izaje
+                            </span>
+                          )}
+                          <div style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+                            Ubicación: {serialProfile?.ubicacion_permitida || 'AMBAS'}
+                          </div>
+                        </div>
+                      ) : rule ? (
                         <div>
                           <span>{rule.unidades_por_caja} u/caja · {cCamada} c/camada · {nCamadas} camadas</span>
-                          <div style={{ fontSize: '0.8rem', color: '#187346', fontWeight: 700 }}>
+                          <div style={{ fontSize: '0.8rem', color: 'var(--color-brand)', fontWeight: 600 }}>
                             {cajasPaleta} cajas / {unidadesPaleta} un. por paleta
                           </div>
                         </div>
@@ -684,10 +913,21 @@ export function ProductsSubView({
                       )}
                     </td>
                     <td>
-                      {rule?.volumen_total_m3 || (rule?.alto_caja_cm && nCamadas) ? (
+                      {esSerial ? (
+                        <div style={{ fontSize: '0.82rem' }}>
+                          {serialProfile?.largo_cm && serialProfile?.ancho_cm && serialProfile?.alto_cm ? (
+                            <div>{serialProfile.largo_cm}×{serialProfile.ancho_cm}×{serialProfile.alto_cm} cm</div>
+                          ) : '—'}
+                          {serialProfile?.peso_unitario_kg ? (
+                            <div style={{ color: 'var(--color-brand)', fontWeight: 600 }}>
+                              Peso: {serialProfile.peso_unitario_kg} kg
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : rule?.volumen_total_m3 || (rule?.alto_caja_cm && nCamadas) ? (
                         <div style={{ fontSize: '0.82rem' }}>
                           {rule.alto_caja_cm && nCamadas ? <div>Alto: {(rule.alto_caja_cm * nCamadas + 15).toFixed(0)} cm</div> : null}
-                          {rule.volumen_total_m3 ? <div style={{ color: '#187346', fontWeight: 600 }}>Vol: {Number(rule.volumen_total_m3).toFixed(3)} m³</div> : null}
+                          {rule.volumen_total_m3 ? <div style={{ color: 'var(--color-brand)', fontWeight: 600 }}>Vol: {Number(rule.volumen_total_m3).toFixed(3)} m³</div> : null}
                         </div>
                       ) : '—'}
                     </td>
@@ -702,7 +942,7 @@ export function ProductsSubView({
                           Editar
                         </button>
                         <button className="btn-detail" type="button" onClick={() => onViewDetail(p)}>
-                          Ver Ficha
+                          Ver ficha
                         </button>
                       </div>
                     </td>

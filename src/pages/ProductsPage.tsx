@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
 import { ProductDetailModal } from './products/ProductDetailModal'
+import { categoriaRepository } from './products/repositories/CategoryRepository'
+import { productoRepository } from './products/repositories/ProductRepository'
 import { CategoriesSubView } from './products/subviews/CategoriesSubView'
 import { DataImportSubView } from './products/subviews/DataImportSubView'
 import { ProductsSubView } from './products/subviews/ProductsSubView'
@@ -20,34 +21,28 @@ export function ProductsPage({ onBack }: { onBack: () => void }) {
 
   async function loadCategories() {
     setLoadingCategories(true)
-    const { data, error: err } = await supabase
-      .from('categoria')
-      .select('id_categoria, nombre, descripcion, activo')
-      .order('nombre')
-
-    if (err) {
-      setError(err.message)
-    } else {
-      setCategories((data as Category[]) ?? [])
+    try {
+      const data = await categoriaRepository.obtenerTodas()
+      setCategories(data)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al cargar categorías.'
+      setError(msg)
+    } finally {
+      setLoadingCategories(false)
     }
-    setLoadingCategories(false)
   }
 
   async function loadProducts() {
     setLoadingProducts(true)
-    const { data, error: err } = await supabase
-      .from('producto')
-      .select(
-        'id_producto, sku, nombre, descripcion, id_categoria, unidad_medida, peso_unitario_kg, costo_unitario, clasificacion_abc, activo, categoria(id_categoria, nombre), regla_empaque(id_empaque, unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta, volumen_caja_m3, volumen_total_m3, permite_puchos, notas_armado, imagen_armado_path, largo_caja_cm, ancho_caja_cm, alto_caja_cm, peso_caja_kg)'
-      )
-      .order('sku')
-
-    if (err) {
-      setError(err.message)
-    } else {
-      setProducts((data as unknown as Product[]) ?? [])
+    try {
+      const data = await productoRepository.obtenerTodos()
+      setProducts(data)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al cargar productos.'
+      setError(msg)
+    } finally {
+      setLoadingProducts(false)
     }
-    setLoadingProducts(false)
   }
 
   useEffect(() => {
@@ -74,7 +69,7 @@ export function ProductsPage({ onBack }: { onBack: () => void }) {
             <span className="module-code-badge">MOD-01</span>
           </div>
           <p className="page-lead">
-            Gestión unificada de productos, especificaciones de empaque y estibado, categorías, proveedores e importación masiva.
+            Gestión unificada de productos, modos de manejo (paletizado y serializado), especificaciones técnicas, categorías y proveedores.
           </p>
         </div>
         <button className="button secondary" type="button" onClick={refreshAll}>
@@ -156,21 +151,15 @@ export function ProductsPage({ onBack }: { onBack: () => void }) {
         />
       )}
 
-      {/* Modal / Ficha Técnica Consolidada (JOIN producto + categoria + regla_empaque) */}
+      {/* Modal / Ficha Técnica Consolidada */}
       <ProductDetailModal
         product={viewingProduct}
         onClose={() => setViewingProduct(null)}
         onPackagingUpdated={async () => {
           await loadProducts()
           if (viewingProduct) {
-            const { data } = await supabase
-              .from('producto')
-              .select(
-                'id_producto, sku, nombre, descripcion, id_categoria, unidad_medida, peso_unitario_kg, costo_unitario, clasificacion_abc, activo, categoria(id_categoria, nombre), regla_empaque(id_empaque, unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta, volumen_caja_m3, volumen_total_m3, permite_puchos, notas_armado, imagen_armado_path, largo_caja_cm, ancho_caja_cm, alto_caja_cm, peso_caja_kg)'
-              )
-              .eq('id_producto', viewingProduct.id_producto)
-              .single()
-            if (data) setViewingProduct(data as unknown as Product)
+            const updated = await productoRepository.obtenerPorId(viewingProduct.id_producto)
+            if (updated) setViewingProduct(updated)
           }
         }}
       />

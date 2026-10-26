@@ -59,5 +59,7 @@ export type PalletRecord = {
   producto?: {
     sku: string
     nombre: string
+    modo_manejo?: string
+    ubicacion_permitida?: 'CAMPO' | 'RACK' | 'AMBAS'
   }
 }

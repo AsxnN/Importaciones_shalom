@@ -5,6 +5,9 @@ import { locationService } from '../services/locationService'
 import type { PalletRecord } from '../types/locations'
 import { PalletDecommissionSubView } from './inventory/PalletDecommissionSubView'
 import { RackLocationsSubView } from './inventory/RackLocationsSubView'
+import { productoRepository } from './products/repositories/ProductRepository'
+import { unidadSerializadaRepository } from './products/repositories/SerialUnitRepository'
+import type { EstadoUnidadSerial, ModoManejoCodigo, Product, UnidadSerializada } from './products/types'
 
 type Warehouse = {
   id_almacen: number
@@ -42,9 +45,48 @@ type ProductOption = {
   id_producto: number
   sku: string
   nombre: string
+  modo_manejo: ModoManejoCodigo
+  categoria_nombre?: string
+  // Modo PALETIZADO
   unidades_por_caja: number
   cajas_por_paleta: number
   volumen_caja_m3: number | null
+  // Modo SERIALIZADO (Maquinaria y Equipos)
+  peso_unitario_kg?: number | null
+  largo_cm?: number | null
+  ancho_cm?: number | null
+  alto_cm?: number | null
+  requiere_equipo_izaje?: boolean
+  ubicacion_permitida?: 'CAMPO' | 'RACK' | 'AMBAS'
+  atributos?: Record<string, unknown>
+}
+
+function mapProductToOption(p: Product): ProductOption {
+  const r = Array.isArray(p.regla_empaque) ? p.regla_empaque[0] : p.regla_empaque
+  const cCamada = (r as any)?.cajas_por_camada ?? (r as any)?.cajas_por_camita ?? 1
+  const nCamadas = (r as any)?.numero_camadas ?? (r as any)?.camitas_por_paleta ?? 1
+
+  const ps = Array.isArray(p.perfil_serializado) ? p.perfil_serializado[0] : p.perfil_serializado
+  const cat = Array.isArray(p.categoria) ? p.categoria[0] : p.categoria
+  const modo = p.modo_manejo || cat?.modo_manejo || (ps ? 'SERIALIZADO' : 'PALETIZADO')
+
+  return {
+    id_producto: Number(p.id_producto),
+    sku: p.sku,
+    nombre: p.nombre || '',
+    modo_manejo: modo,
+    categoria_nombre: cat?.nombre,
+    unidades_por_caja: (r as any)?.unidades_por_caja ?? 1,
+    cajas_por_paleta: Math.max(1, cCamada * nCamadas),
+    volumen_caja_m3: (r as any)?.volumen_caja_m3 ?? null,
+    peso_unitario_kg: ps?.peso_unitario_kg ?? p.peso_unitario_kg ?? null,
+    largo_cm: ps?.largo_cm ?? null,
+    ancho_cm: ps?.ancho_cm ?? null,
+    alto_cm: ps?.alto_cm ?? null,
+    requiere_equipo_izaje: ps?.requiere_equipo_izaje ?? false,
+    ubicacion_permitida: ps?.ubicacion_permitida ?? 'AMBAS',
+    atributos: ps?.atributos
+  }
 }
 
 type InventoryItem = {
@@ -59,7 +101,7 @@ type InventoryItem = {
     nombre: string
     clasificacion_abc: string | null
     unidad_medida: string | null
-    categoria?: { nombre: string } | null
+    categoria?: { nombre: string; modo_manejo?: string } | null
     regla_empaque?: {
       unidades_por_caja: number
       cajas_por_camada?: number
@@ -116,8 +158,16 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
   const [modalCajasPucho, setModalCajasPucho] = useState<string>('1')
   const [modalPaletas, setModalPaletas] = useState<string>('0')
   const [modalPuchos, setModalPuchos] = useState<string>('0')
-  const [modalMotivo, setModalMotivo] = useState<string>('Ingreso de paleta por recepción')
+  const [modalMotivo, setModalMotivo] = useState<string>('Ingreso de stock en almacén')
   const [savingAdjust, setSavingAdjust] = useState(false)
+
+  // Estado para productos SERIALIZADOS (Maquinaria y Equipos)
+  const [modalNumeroSerie, setModalNumeroSerie] = useState<string>('')
+  const [modalSerialEstado, setModalSerialEstado] = useState<EstadoUnidadSerial>('DISPONIBLE')
+  const [modalSerialUnidadesAjuste, setModalSerialUnidadesAjuste] = useState<string>('1')
+  const [serialUnitsMap, setSerialUnitsMap] = useState<Map<number, UnidadSerializada[]>>(new Map())
+  const [inspectSerialProd, setInspectSerialProd] = useState<{ product: ProductOption; units: UnidadSerializada[] } | null>(null)
+  const [updatingUnitState, setUpdatingUnitState] = useState(false)
 
   // Modal y Estado de CRUD para Almacenes
   const [showWhModal, setShowWhModal] = useState(false)
@@ -156,31 +206,16 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       setSelectedWarehouseId(whList[0].id_almacen)
     }
 
-    // 2. Cargar Catálogo de Productos con su Regla de Empaque para el Modal
-    const { data: prodData } = await supabase
-      .from('producto')
-      .select('id_producto, sku, nombre, regla_empaque(unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta, volumen_caja_m3)')
-      .eq('activo', true)
-      .order('sku')
-
-    if (prodData) {
-      const opts: ProductOption[] = prodData.map((p: any) => {
-        const r = Array.isArray(p.regla_empaque) ? p.regla_empaque[0] : p.regla_empaque
-        const cCamada = r?.cajas_por_camada ?? r?.cajas_por_camita ?? 1
-        const nCamadas = r?.numero_camadas ?? r?.camitas_por_paleta ?? 1
-        return {
-          id_producto: p.id_producto,
-          sku: p.sku,
-          nombre: p.nombre,
-          unidades_por_caja: r?.unidades_por_caja ?? 1,
-          cajas_por_paleta: cCamada * nCamadas,
-          volumen_caja_m3: r?.volumen_caja_m3 ?? null
-        }
-      })
+    // 2. Cargar Catálogo de Productos con soporte Multi-Modo vía Repositorio
+    try {
+      const prodList = await productoRepository.obtenerTodos()
+      const opts: ProductOption[] = prodList.map(mapProductToOption)
       setAllProducts(opts)
       if (opts.length > 0 && !modalProdId) {
         setModalProdId(String(opts[0].id_producto))
       }
+    } catch (prodErr: any) {
+      console.warn('[loadInitialData] Error cargando productos vía repositorio:', prodErr)
     }
 
     setLoading(false)
@@ -194,26 +229,48 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
     // Asegurar catálogo de productos
     let currentProds = allProducts
     if (currentProds.length === 0) {
-      const { data: pData } = await supabase
-        .from('producto')
-        .select('id_producto, sku, nombre, regla_empaque(unidades_por_caja, cajas_por_camada, numero_camadas, cajas_por_camita, camitas_por_paleta, volumen_caja_m3)')
-        .eq('activo', true)
-      if (pData) {
-        currentProds = pData.map((p: any) => {
-          const r = Array.isArray(p.regla_empaque) ? p.regla_empaque[0] : p.regla_empaque
-          const cCamada = r?.cajas_por_camada ?? r?.cajas_por_camita ?? 1
-          const nCamadas = r?.numero_camadas ?? r?.camitas_por_paleta ?? 1
-          return {
-            id_producto: p.id_producto,
-            sku: p.sku,
-            nombre: p.nombre,
-            unidades_por_caja: r?.unidades_por_caja ?? 1,
-            cajas_por_paleta: cCamada * nCamadas,
-            volumen_caja_m3: r?.volumen_caja_m3 ?? null
-          }
-        })
+      try {
+        const prodList = await productoRepository.obtenerTodos()
+        currentProds = prodList.map(mapProductToOption)
         setAllProducts(currentProds)
+      } catch (prodErr: any) {
+        console.warn('[loadWarehouseInventory] Error cargando catálogo de productos:', prodErr)
       }
+    }
+
+    // Cargar unidades serializadas en este almacén
+    try {
+      const { data: sData } = await supabase
+        .from('unidad_serializada')
+        .select(`
+          id_unidad,
+          id_producto,
+          numero_serie,
+          id_etiqueta,
+          id_almacen,
+          estado,
+          fecha_ingreso,
+          etiqueta_rfid:etiqueta_rfid (
+            id_etiqueta,
+            uid_tag,
+            estado
+          )
+        `)
+        .eq('id_almacen', whId)
+        .order('fecha_ingreso', { ascending: false })
+
+      const sMap = new Map<number, UnidadSerializada[]>()
+      if (sData) {
+        for (const s of sData) {
+          const pid = Number(s.id_producto)
+          const list = sMap.get(pid) || []
+          list.push(s as unknown as UnidadSerializada)
+          sMap.set(pid, list)
+        }
+      }
+      setSerialUnitsMap(sMap)
+    } catch (sErr) {
+      console.warn('[loadWarehouseInventory] Error cargando unidades serializadas:', sErr)
     }
 
     const { data, error: invErr } = await supabase
@@ -230,7 +287,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
           nombre,
           clasificacion_abc,
           unidad_medida,
-          categoria (nombre),
+          categoria (nombre, modo_manejo),
           regla_empaque (
             unidades_por_caja,
             cajas_por_camada,
@@ -436,13 +493,18 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       const uCaja = Math.max(1, r?.unidades_por_caja || 1)
       const totalCajas = Math.floor(stock / uCaja)
 
-      if (r?.volumen_caja_m3) {
+      const prodOpt = allProducts.find((p) => p.id_producto === item.id_producto)
+      if (prodOpt?.modo_manejo === 'SERIALIZADO' && prodOpt.largo_cm && prodOpt.ancho_cm && prodOpt.alto_cm) {
+        const volUnitM3 = (prodOpt.largo_cm * prodOpt.ancho_cm * prodOpt.alto_cm) / 1000000
+        totalVolumenM3 += stock * volUnitM3
+      } else if (r?.volumen_caja_m3) {
         totalVolumenM3 += totalCajas * Number(r.volumen_caja_m3)
       }
     })
 
     const capacidad = selectedWarehouse?.capacidad_m3 || 500
     const pctOcupado = capacidad > 0 ? (totalVolumenM3 / capacidad) * 100 : 0
+    const totalEquiposSeriales = Array.from(serialUnitsMap.values()).reduce((acc, list) => acc + list.length, 0)
 
     return {
       totalUnidades,
@@ -451,9 +513,10 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       totalCajasPuchos,
       totalVolumenM3: Number(totalVolumenM3.toFixed(3)),
       pctOcupado: Math.min(100, Number(pctOcupado.toFixed(1))),
-      itemsCount: activeItems.length
+      itemsCount: activeItems.length,
+      totalEquiposSeriales
     }
-  }, [activeItems, selectedWarehouse, activePallets])
+  }, [activeItems, selectedWarehouse, activePallets, allProducts, serialUnitsMap])
 
 
   // Producto seleccionado en el modal de ajuste
@@ -461,9 +524,31 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
     return allProducts.find((p) => String(p.id_producto) === modalProdId)
   }, [allProducts, modalProdId])
 
-  // Cálculos en tiempo real del modal de ajuste / ingreso
+  // Cálculos en tiempo real del modal de ajuste / ingreso multi-modo
   const modalPreview = useMemo(() => {
     if (!modalSelectedProd) return null
+
+    // Modo SERIALIZADO (Maquinaria y Equipos)
+    if (modalSelectedProd.modo_manejo === 'SERIALIZADO') {
+      const { largo_cm, ancho_cm, alto_cm } = modalSelectedProd
+      const volumenM3 = largo_cm && ancho_cm && alto_cm
+        ? ((largo_cm * ancho_cm * alto_cm) / 1000000).toFixed(3)
+        : null
+      const totalUnits = modalMode === 'rfid' ? 1 : Math.max(1, parseInt(modalSerialUnidadesAjuste) || 1)
+
+      return {
+        isSerial: true,
+        pal: 0,
+        puch: 0,
+        cajasPorPaleta: 1,
+        cajasDePaletas: 0,
+        totalCajas: totalUnits,
+        totalUnidades: totalUnits,
+        volumenM3
+      }
+    }
+
+    // Modo PALETIZADO Estándar
     const cPaleta = modalSelectedProd.cajas_por_paleta || 1
     const uCaja = modalSelectedProd.unidades_por_caja || 1
 
@@ -475,6 +560,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
         : null
 
       return {
+        isSerial: false,
         pal: modalTipoPaleta === 'COMPLETO' ? 1 : 0,
         puch: modalTipoPaleta === 'PUCHO' ? cajas : 0,
         cajasPorPaleta: cPaleta,
@@ -495,6 +581,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       : null
 
     return {
+      isSerial: false,
       pal,
       puch,
       cajasPorPaleta: cPaleta,
@@ -503,9 +590,34 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       totalUnidades,
       volumenM3
     }
-  }, [modalSelectedProd, modalMode, modalTipoPaleta, modalCajasPucho, modalPaletas, modalPuchos])
+  }, [modalSelectedProd, modalMode, modalTipoPaleta, modalCajasPucho, modalPaletas, modalPuchos, modalSerialUnidadesAjuste])
 
-  // Guardar Ajuste / Ingreso de Paleta RFID
+  // Cambiar estado operativo de una unidad serializada
+  async function handleToggleUnitState(unit: UnidadSerializada) {
+    setUpdatingUnitState(true)
+    setError(null)
+    try {
+      const nuevoEstado: EstadoUnidadSerial = unit.estado === 'DISPONIBLE' ? 'EN_MANTENIMIENTO' : 'DISPONIBLE'
+      await unidadSerializadaRepository.cambiarEstado(unit.id_unidad, nuevoEstado)
+
+      // Actualizar estado local
+      if (inspectSerialProd) {
+        const updatedUnits = inspectSerialProd.units.map((u) =>
+          u.id_unidad === unit.id_unidad ? { ...u, estado: nuevoEstado } : u
+        )
+        setInspectSerialProd({ ...inspectSerialProd, units: updatedUnits })
+      }
+      if (selectedWarehouseId) {
+        await loadWarehouseInventory(selectedWarehouseId)
+      }
+    } catch (err: any) {
+      setError(`Error actualizando estado de unidad serializada: ${err.message}`)
+    } finally {
+      setUpdatingUnitState(false)
+    }
+  }
+
+  // Guardar Ajuste / Ingreso de Stock con soporte Multi-Modo
   async function handleSaveAdjustment(e: FormEvent) {
     e.preventDefault()
     if (!selectedWarehouseId || !modalProdId) return
@@ -514,6 +626,233 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
     setError(null)
     setSuccessMsg(null)
 
+    // =========================================================================
+    // RAMIFICACIÓN 1: MODO SERIALIZADO (Maquinaria y Equipos Únicos)
+    // =========================================================================
+    if (modalSelectedProd?.modo_manejo === 'SERIALIZADO') {
+      if (modalMode === 'rfid') {
+        const cleanSerie = modalNumeroSerie.trim()
+        const cleanTag = modalUidTag.trim().toUpperCase()
+
+        if (!cleanSerie) {
+          setError('El número de serie del equipo es obligatorio.')
+          setSavingAdjust(false)
+          return
+        }
+        if (!cleanTag) {
+          setError('El código Tag RFID es obligatorio.')
+          setSavingAdjust(false)
+          return
+        }
+
+        try {
+          // 1. Validar unicidad del número de serie para este producto
+          const { data: existingSerial } = await supabase
+            .from('unidad_serializada')
+            .select('id_unidad, estado')
+            .eq('id_producto', parseInt(modalProdId))
+            .eq('numero_serie', cleanSerie)
+            .maybeSingle()
+
+          if (existingSerial) {
+            throw new Error(
+              `El número de serie [${cleanSerie}] ya se encuentra registrado para este producto (estado: ${existingSerial.estado}).`
+            )
+          }
+
+          // 2. Validar o registrar etiqueta RFID individual
+          const { data: existingTag } = await supabase
+            .from('etiqueta_rfid')
+            .select('id_etiqueta, estado, id_almacen_actual, id_producto')
+            .eq('uid_tag', cleanTag)
+            .maybeSingle()
+
+          if (existingTag && existingTag.estado === 'ACTIVA') {
+            throw new Error(
+              `La etiqueta RFID [${cleanTag}] ya está ACTIVA en el sistema (almacén #${existingTag.id_almacen_actual}). No se puede registrar dos veces un tag activo.`
+            )
+          }
+
+          let tagId: number
+          if (existingTag) {
+            const { data: updTag, error: updErr } = await supabase
+              .from('etiqueta_rfid')
+              .update({
+                id_producto: parseInt(modalProdId),
+                id_almacen_actual: selectedWarehouseId,
+                codigo_barras: cleanTag,
+                tipo_paleta: 'COMPLETO',
+                cantidad_paquetes: 1,
+                cantidad_actual: 1,
+                estado: 'ACTIVA',
+                notas: `Equipo serie: ${cleanSerie}`
+              })
+              .eq('id_etiqueta', existingTag.id_etiqueta)
+              .select('id_etiqueta')
+              .single()
+
+            if (updErr) throw updErr
+            tagId = updTag.id_etiqueta
+          } else {
+            const { data: insTag, error: insErr } = await supabase
+              .from('etiqueta_rfid')
+              .insert({
+                id_producto: parseInt(modalProdId),
+                id_almacen_actual: selectedWarehouseId,
+                uid_tag: cleanTag,
+                codigo_barras: cleanTag,
+                tipo_paleta: 'COMPLETO',
+                cantidad_paquetes: 1,
+                cantidad_actual: 1,
+                estado: 'ACTIVA',
+                notas: `Equipo serie: ${cleanSerie}`
+              })
+              .select('id_etiqueta')
+              .single()
+
+            if (insErr) throw insErr
+            tagId = insTag.id_etiqueta
+          }
+
+          // 3. Crear unidad serializada
+          const { error: unitErr } = await supabase
+            .from('unidad_serializada')
+            .insert({
+              id_producto: parseInt(modalProdId),
+              numero_serie: cleanSerie,
+              id_etiqueta: tagId,
+              id_almacen: selectedWarehouseId,
+              estado: modalSerialEstado || 'DISPONIBLE'
+            })
+
+          if (unitErr) throw unitErr
+
+          // 4. Actualizar inventario contable (+1 unidad física)
+          const { data: invRow } = await supabase
+            .from('inventario')
+            .select('stock_real, stock_minimo')
+            .eq('id_almacen', selectedWarehouseId)
+            .eq('id_producto', parseInt(modalProdId))
+            .maybeSingle()
+
+          const currStock = invRow ? Number(invRow.stock_real) : 0
+          const newStock = currStock + 1
+          const minStock = invRow?.stock_minimo ?? 1
+          const semaforo = newStock <= 0 ? 'ROJO' : newStock <= minStock ? 'AMARILLO' : 'VERDE'
+
+          const { error: invErr } = await supabase
+            .from('inventario')
+            .upsert(
+              {
+                id_almacen: selectedWarehouseId,
+                id_producto: parseInt(modalProdId),
+                stock_real: newStock,
+                stock_minimo: minStock,
+                estado_semaforo: semaforo
+              },
+              { onConflict: 'id_producto,id_almacen' }
+            )
+
+          if (invErr) {
+            console.warn('[handleSaveAdjustment] Error actualizando inventario:', invErr.message)
+          }
+
+          // 5. Registrar movimiento en Kardex
+          await supabase.from('movimiento').insert({
+            id_etiqueta: tagId,
+            id_producto: parseInt(modalProdId),
+            tipo: 'INGRESO_COMPLETO',
+            cantidad_afectada: 1,
+            destino_almacen: selectedWarehouseId,
+            motivo: modalMotivo.trim() || `Ingreso de maquinaria serializada [${cleanSerie}] con RFID [${cleanTag}]`
+          })
+
+          // Auditoría
+          void logCatalogChange({
+            tabla: 'unidad_serializada',
+            operacion: 'INSERT',
+            id_registro: cleanSerie,
+            datos_nuevos: {
+              id_producto: parseInt(modalProdId),
+              id_almacen: selectedWarehouseId,
+              uid_tag: cleanTag,
+              numero_serie: cleanSerie,
+              estado: modalSerialEstado
+            }
+          })
+
+          setSuccessMsg(
+            `Equipo serializado [${cleanSerie}] con Tag RFID [${cleanTag}] registrado exitosamente (+1 unidad ingresada al inventario).`
+          )
+          setShowAdjustModal(false)
+          setModalNumeroSerie('')
+          setModalUidTag('')
+          await loadWarehouseInventory(selectedWarehouseId)
+        } catch (err: any) {
+          setError(`Error al registrar equipo serializado: ${err.message}`)
+        } finally {
+          setSavingAdjust(false)
+        }
+        return
+      } else {
+        // Modo Manual Contable para Serializado
+        const unidades = Math.max(0, parseInt(modalSerialUnidadesAjuste) || 0)
+        try {
+          const { data: invRow } = await supabase
+            .from('inventario')
+            .select('stock_real, stock_minimo')
+            .eq('id_almacen', selectedWarehouseId)
+            .eq('id_producto', parseInt(modalProdId))
+            .maybeSingle()
+
+          const currStock = invRow ? Number(invRow.stock_real) : 0
+          const newStock = currStock + unidades
+          const minStock = invRow?.stock_minimo ?? 1
+          const semaforo = newStock <= 0 ? 'ROJO' : newStock <= minStock ? 'AMARILLO' : 'VERDE'
+
+          const { error: invErr } = await supabase
+            .from('inventario')
+            .upsert(
+              {
+                id_almacen: selectedWarehouseId,
+                id_producto: parseInt(modalProdId),
+                stock_real: newStock,
+                stock_minimo: minStock,
+                estado_semaforo: semaforo
+              },
+              { onConflict: 'id_producto,id_almacen' }
+            )
+
+          if (invErr) throw invErr
+
+          if (unidades > 0) {
+            await supabase.from('movimiento').insert({
+              id_producto: parseInt(modalProdId),
+              tipo: 'INGRESO_COMPLETO',
+              cantidad_afectada: unidades,
+              destino_almacen: selectedWarehouseId,
+              motivo: modalMotivo.trim() || `Ajuste contable de unidades serializadas (+${unidades} unid.)`
+            })
+          }
+
+          setSuccessMsg(
+            `Stock contable de maquinaria actualizado exitosamente (+${unidades} unidades).`
+          )
+          setShowAdjustModal(false)
+          setModalSerialUnidadesAjuste('1')
+          await loadWarehouseInventory(selectedWarehouseId)
+        } catch (err: any) {
+          setError(err.message || 'Error en el ajuste de stock.')
+        } finally {
+          setSavingAdjust(false)
+        }
+        return
+      }
+    }
+
+    // =========================================================================
+    // RAMIFICACIÓN 2: MODO PALETIZADO (Flujo Estándar Existente)
+    // =========================================================================
     // Modo 1: Registro manual de Paleta Física con código RFID
     if (modalMode === 'rfid') {
       const cleanTag = modalUidTag.trim().toUpperCase()
@@ -556,7 +895,7 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
       return
     }
 
-    // Modo 2: Ajuste Contable Rápido de Stock
+    // Modo 2: Ajuste Contable Rápido de Stock Paletizado
     const pal = Math.max(0, parseInt(modalPaletas) || 0)
     const puch = Math.max(0, parseInt(modalPuchos) || 0)
 
@@ -1194,6 +1533,10 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                 <tbody>
                   {displayedInventory.map((item) => {
                     const stock = Number(item.stock_real) || 0
+                    const prodOpt = allProducts.find((p) => p.id_producto === item.id_producto)
+                    const isSerialItem = prodOpt?.modo_manejo === 'SERIALIZADO' || item.producto?.categoria?.modo_manejo === 'SERIALIZADO' || serialUnitsMap.has(item.id_producto)
+                    const prodUnits = serialUnitsMap.get(item.id_producto) || []
+
                     const r = Array.isArray(item.producto?.regla_empaque)
                       ? item.producto.regla_empaque[0]
                       : item.producto?.regla_empaque
@@ -1216,7 +1559,11 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                       .filter((p) => p.tipo_paleta === 'PUCHO')
                       .reduce((acc, p) => acc + (Number(p.cantidad_paquetes) || 1), 0)
                     const totalPaletasFisicas = paletasCompletas + puchosCount
-                    const volM3 = r?.volumen_caja_m3 ? totalCajas * Number(r.volumen_caja_m3) : null
+
+                    let volM3 = r?.volumen_caja_m3 ? totalCajas * Number(r.volumen_caja_m3) : null
+                    if (isSerialItem && prodOpt?.largo_cm && prodOpt?.ancho_cm && prodOpt?.alto_cm) {
+                      volM3 = stock * ((prodOpt.largo_cm * prodOpt.ancho_cm * prodOpt.alto_cm) / 1000000)
+                    }
 
                     return (
                       <tr key={item.id_inventario}>
@@ -1232,27 +1579,62 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                           </span>
                         </td>
                         <td>
-                          <strong style={{ fontSize: '1.05rem', color: paletasCompletas > 0 ? 'var(--color-brand)' : 'inherit' }}>
-                            {paletasCompletas} {paletasCompletas === 1 ? 'paleta' : 'paletas'}
-                          </strong>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                            ({paletasCompletas * cPaleta} cajas)
-                          </div>
-                          <div style={{ fontSize: '0.72rem', marginTop: '4px', fontWeight: 600, color: paletasCompletas > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
-                            {paletasCompletas > 0 ? `🏷️ ${paletasCompletas} completa(s) con tag` : '0 completas activas'}
-                          </div>
+                          {isSerialItem ? (
+                            <div>
+                              <span
+                                style={{
+                                  display: 'inline-block',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.78rem',
+                                  fontWeight: 600,
+                                  background: 'var(--color-brand-soft)',
+                                  color: 'var(--color-brand)',
+                                  border: '1px solid var(--color-border)'
+                                }}
+                              >
+                                Serializado unitario
+                              </span>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}>
+                                {prodUnits.length} {prodUnits.length === 1 ? 'equipo registrado' : 'equipos registrados'}
+                              </div>
+                              <div style={{ fontSize: '0.72rem', marginTop: '2px', fontWeight: 600, color: prodUnits.length > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
+                                {prodUnits.length > 0 ? `🏷️ ${prodUnits.length} con chip RFID activo` : 'Sin chips enrolados'}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <strong style={{ fontSize: '1.05rem', color: paletasCompletas > 0 ? 'var(--color-brand)' : 'inherit' }}>
+                                {paletasCompletas} {paletasCompletas === 1 ? 'paleta' : 'paletas'}
+                              </strong>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                ({paletasCompletas * cPaleta} cajas)
+                              </div>
+                              <div style={{ fontSize: '0.72rem', marginTop: '4px', fontWeight: 600, color: paletasCompletas > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
+                                {paletasCompletas > 0 ? `🏷️ ${paletasCompletas} completa(s) con tag` : '0 completas activas'}
+                              </div>
+                            </>
+                          )}
                         </td>
                         <td>
-                          <span style={{ fontWeight: 700, color: puchosCount > 0 ? 'var(--color-warning)' : 'inherit' }}>
-                            {puchosCount > 0 ? `${cajasPuchos} cajas (${puchosCount} pucho)` : '0 cajas'}
-                          </span>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                            ({cajasPuchos * uCaja} unid.)
-                          </div>
-                          {puchosCount > 1 && (
-                            <div style={{ fontSize: '0.70rem', color: 'var(--color-danger)', fontWeight: 600, marginTop: '2px' }}>
-                              ⚠️ {puchosCount} puchos (unificar)
-                            </div>
+                          {isSerialItem ? (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+                              No aplica (control por serie)
+                            </span>
+                          ) : (
+                            <>
+                              <span style={{ fontWeight: 700, color: puchosCount > 0 ? 'var(--color-warning)' : 'inherit' }}>
+                                {puchosCount > 0 ? `${cajasPuchos} cajas (${puchosCount} pucho)` : '0 cajas'}
+                              </span>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                ({cajasPuchos * uCaja} unid.)
+                              </div>
+                              {puchosCount > 1 && (
+                                <div style={{ fontSize: '0.70rem', color: 'var(--color-danger)', fontWeight: 600, marginTop: '2px' }}>
+                                  ⚠️ {puchosCount} puchos (unificar)
+                                </div>
+                              )}
+                            </>
                           )}
                         </td>
                         <td>
@@ -1305,28 +1687,52 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                               type="button"
                               onClick={() => {
                                 setModalProdId(String(item.id_producto))
-                                setModalPaletas(String(paletasCompletas))
-                                setModalPuchos(String(cajasPuchos))
+                                if (isSerialItem) {
+                                  setModalNumeroSerie('')
+                                  setModalSerialUnidadesAjuste('1')
+                                } else {
+                                  setModalPaletas(String(paletasCompletas))
+                                  setModalPuchos(String(cajasPuchos))
+                                }
                                 setShowAdjustModal(true)
                               }}
                             >
                               Ajustar Stock
                             </button>
-                            <button
-                              className="btn-detail"
-                              type="button"
-                              onClick={() => {
-                                setFilterPalletSku(item.producto?.sku || '')
-                                setCurrentTab('paletas')
-                              }}
-                              style={{
-                                color: totalPaletasFisicas > 0 ? 'var(--color-brand)' : 'var(--color-text-secondary)',
-                                borderColor: totalPaletasFisicas > 0 ? undefined : 'var(--color-border)'
-                              }}
-                              title={totalPaletasFisicas > 0 ? `Ver las ${totalPaletasFisicas} paletas físicas con tag RFID en almacén` : 'No hay paletas físicas con tag RFID para este producto'}
-                            >
-                              {totalPaletasFisicas > 0 ? `Ver paletas (${totalPaletasFisicas} físicas)` : 'Paletas físicas (0)'}
-                            </button>
+                            {isSerialItem ? (
+                              <button
+                                className="btn-detail"
+                                type="button"
+                                onClick={() => {
+                                  if (prodOpt) {
+                                    setInspectSerialProd({ product: prodOpt, units: prodUnits })
+                                  }
+                                }}
+                                style={{
+                                  color: prodUnits.length > 0 ? 'var(--color-brand)' : 'var(--color-text-secondary)',
+                                  borderColor: prodUnits.length > 0 ? undefined : 'var(--color-border)'
+                                }}
+                                title={prodUnits.length > 0 ? `Ver los ${prodUnits.length} equipos serializados en almacén` : 'No hay equipos registrados con serie en este almacén'}
+                              >
+                                {prodUnits.length > 0 ? `Ver equipos (${prodUnits.length} seriales)` : 'Equipos seriales (0)'}
+                              </button>
+                            ) : (
+                              <button
+                                className="btn-detail"
+                                type="button"
+                                onClick={() => {
+                                  setFilterPalletSku(item.producto?.sku || '')
+                                  setCurrentTab('paletas')
+                                }}
+                                style={{
+                                  color: totalPaletasFisicas > 0 ? 'var(--color-brand)' : 'var(--color-text-secondary)',
+                                  borderColor: totalPaletasFisicas > 0 ? undefined : 'var(--color-border)'
+                                }}
+                                title={totalPaletasFisicas > 0 ? `Ver las ${totalPaletasFisicas} paletas físicas con tag RFID en almacén` : 'No hay paletas físicas con tag RFID para este producto'}
+                              >
+                                {totalPaletasFisicas > 0 ? `Ver paletas (${totalPaletasFisicas} físicas)` : 'Paletas físicas (0)'}
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -1536,163 +1942,114 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {/* MODAL 1: Ingreso de Paleta RFID / Ajuste por Paletas y Puchos */}
+      {/* MODAL 1: Ingreso de Stock Multi-Modo (RFID / Ajuste) */}
       {showAdjustModal && (
         <div className="modal-overlay" onClick={() => setShowAdjustModal(false)}>
           <div className="modal-window" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">OPERACIÓN DE ENTRADA / INVENTARIO</p>
-                <h3>Ingreso de Stock e Identificación de Paletas</h3>
-                <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
-                  Sede: <strong>{selectedWarehouse?.nombre}</strong>
-                </p>
-              </div>
-              <button
-                className="modal-close-btn"
-                type="button"
-                onClick={() => setShowAdjustModal(false)}
-              >
-                ✕
-              </button>
-            </div>
+            {(() => {
+              const isSerialModal = modalSelectedProd?.modo_manejo === 'SERIALIZADO'
 
-            {/* Pestañas de Modo: RFID vs Ajuste Contable */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--color-border)', paddingBottom: '10px' }}>
-              <button
-                type="button"
-                onClick={() => setModalMode('rfid')}
-                style={{
-                  background: modalMode === 'rfid' ? 'var(--color-brand)' : 'transparent',
-                  color: modalMode === 'rfid' ? '#FFFFFF' : 'var(--color-text-secondary)',
-                  border: `1px solid ${modalMode === 'rfid' ? 'var(--color-brand)' : 'var(--color-border)'}`,
-                  padding: '7px 14px',
-                  borderRadius: '6px',
-                  fontWeight: modalMode === 'rfid' ? 600 : 400,
-                  fontSize: '0.86rem',
-                  cursor: 'pointer'
-                }}
-              >
-                🏷️ Ingreso de Paleta con Tag RFID (Manual Web)
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalMode('manual')}
-                style={{
-                  background: modalMode === 'manual' ? 'var(--color-brand)' : 'transparent',
-                  color: modalMode === 'manual' ? '#FFFFFF' : 'var(--color-text-secondary)',
-                  border: `1px solid ${modalMode === 'manual' ? 'var(--color-brand)' : 'var(--color-border)'}`,
-                  padding: '7px 14px',
-                  borderRadius: '6px',
-                  fontWeight: modalMode === 'manual' ? 600 : 400,
-                  fontSize: '0.86rem',
-                  cursor: 'pointer'
-                }}
-              >
-                📊 Ajuste Masivo Contable
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveAdjustment}>
-              {modalMode === 'rfid' && (
-                <div
-                  style={{
-                    padding: '10px 14px',
-                    borderRadius: '6px',
-                    background: 'var(--color-brand-soft)',
-                    border: '1px solid var(--color-border)',
-                    marginBottom: '16px',
-                    fontSize: '0.82rem',
-                    color: 'var(--color-text-primary)'
-                  }}
-                >
-                  <strong>Entorno Web:</strong> Como este terminal web no cuenta con sensor NFC/RFID físico como el móvil,
-                  debes ingresar manualmente el código alfanumérico leído del chip RFID (o pistola lectora USB).
-                  La paleta quedará registrada en el inventario activo y sus unidades sumarán automáticamente al stock real y Kardex.
-                </div>
-              )}
-
-              <label style={{ display: 'grid', gap: '6px', marginBottom: '14px', fontWeight: 600, fontSize: '0.88rem' }}>
-                Producto / SKU a Ingresar
-                <select
-                  value={modalProdId}
-                  onChange={(e) => setModalProdId(e.target.value)}
-                  style={{
-                    padding: '10px',
-                    borderRadius: '6px',
-                    background: 'var(--color-surface)',
-                    border: '1px solid var(--color-border)',
-                    color: 'var(--color-text-primary)'
-                  }}
-                  required
-                >
-                  {allProducts.map((p) => (
-                    <option key={p.id_producto} value={p.id_producto}>
-                      [{p.sku}] {p.nombre} — ({p.cajas_por_paleta} cajas/paleta, {p.unidades_por_caja} unid/caja)
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {modalMode === 'rfid' ? (
+              return (
                 <>
-                  <div style={{ marginBottom: '14px' }}>
-                    <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>
-                          Código de la Paleta (Tag RFID) <span style={{ color: 'var(--color-danger)' }}>*</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!selectedWarehouseId) return
-                            const suggested = await locationService.suggestNextRfidTag(
-                              selectedWarehouseId,
-                              selectedWarehouse?.prefijo_rfid || undefined
-                            )
-                            setModalUidTag(suggested)
-                          }}
-                          style={{
-                            padding: '3px 10px',
-                            fontSize: '0.74rem',
-                            borderRadius: '4px',
-                            background: 'var(--color-brand-soft)',
-                            color: 'var(--color-brand)',
-                            border: '1px solid var(--color-border)',
-                            cursor: 'pointer',
-                            fontWeight: 600
-                          }}
-                          title="Sugerir siguiente código secuencial según el prefijo oficial de este almacén"
-                        >
-                          ⚡ Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        value={modalUidTag}
-                        onChange={(e) => setModalUidTag(e.target.value.toUpperCase())}
-                        placeholder={`Ej. ${selectedWarehouse?.prefijo_rfid || 'IMP'}00001`}
-                        required
-                        style={{
-                          fontFamily: 'monospace',
-                          fontWeight: 700,
-                          letterSpacing: '0.5px',
-                          textTransform: 'uppercase',
-                          padding: '10px'
-                        }}
-                      />
-                      <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                        Formato oficial: [{selectedWarehouse?.prefijo_rfid || 'PREFIJO'}][5 dígitos]. Ingréselo manualmente o presione Sugerir.
-                      </span>
-                    </label>
+                  <div className="modal-header">
+                    <div>
+                      <p className="eyebrow">
+                        {isSerialModal ? 'OPERACIÓN DE ENTRADA / INVENTARIO SERIALIZADO' : 'OPERACIÓN DE ENTRADA / INVENTARIO PALETIZADO'}
+                      </p>
+                      <h3>
+                        {isSerialModal ? 'Ingreso de Maquinaria y Equipos Serializados' : 'Ingreso de Stock e Identificación de Paletas'}
+                      </h3>
+                      <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
+                        Sede: <strong>{selectedWarehouse?.nombre}</strong> · Modo:{' '}
+                        <strong>{isSerialModal ? 'Serializado unitario' : 'Paletizado estándar'}</strong>
+                      </p>
+                    </div>
+                    <button
+                      className="modal-close-btn"
+                      type="button"
+                      onClick={() => setShowAdjustModal(false)}
+                    >
+                      ✕
+                    </button>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '14px' }}>
-                    <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                      Tipo de Paleta / Carga
+                  {/* Pestañas de Modo: RFID vs Ajuste Contable */}
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--color-border)', paddingBottom: '10px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setModalMode('rfid')}
+                      style={{
+                        background: modalMode === 'rfid' ? 'var(--color-brand)' : 'transparent',
+                        color: modalMode === 'rfid' ? '#FFFFFF' : 'var(--color-text-secondary)',
+                        border: `1px solid ${modalMode === 'rfid' ? 'var(--color-brand)' : 'var(--color-border)'}`,
+                        padding: '7px 14px',
+                        borderRadius: '6px',
+                        fontWeight: modalMode === 'rfid' ? 600 : 400,
+                        fontSize: '0.86rem',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {isSerialModal ? '🏷️ Enrolar Equipo (Tag RFID + Número de Serie)' : '🏷️ Ingreso de Paleta con Tag RFID (Manual Web)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setModalMode('manual')}
+                      style={{
+                        background: modalMode === 'manual' ? 'var(--color-brand)' : 'transparent',
+                        color: modalMode === 'manual' ? '#FFFFFF' : 'var(--color-text-secondary)',
+                        border: `1px solid ${modalMode === 'manual' ? 'var(--color-brand)' : 'var(--color-border)'}`,
+                        padding: '7px 14px',
+                        borderRadius: '6px',
+                        fontWeight: modalMode === 'manual' ? 600 : 400,
+                        fontSize: '0.86rem',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {isSerialModal ? '📊 Ajuste Contable de Unidades' : '📊 Ajuste Masivo Contable'}
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleSaveAdjustment}>
+                    {modalMode === 'rfid' && (
+                      <div
+                        style={{
+                          padding: '10px 14px',
+                          borderRadius: '6px',
+                          background: 'var(--color-brand-soft)',
+                          border: '1px solid var(--color-border)',
+                          marginBottom: '16px',
+                          fontSize: '0.82rem',
+                          color: 'var(--color-text-primary)'
+                        }}
+                      >
+                        {isSerialModal ? (
+                          <>
+                            <strong>Identificación de Maquinaria y Equipos:</strong> Cada unidad se identifica unitariamente
+                            con su número de serie de fábrica y su Tag RFID individual. No se aplican reglas de empaque, cajas
+                            ni cargas pucho. Al registrarla quedará activa en el almacén sumando +1 al inventario y al Kardex.
+                          </>
+                        ) : (
+                          <>
+                            <strong>Entorno Web:</strong> Como este terminal web no cuenta con sensor NFC/RFID físico como el móvil,
+                            debes ingresar manualmente el código alfanumérico leído del chip RFID (o pistola lectora USB).
+                            La paleta quedará registrada en el inventario activo y sus unidades sumarán automáticamente al stock real y Kardex.
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    <label style={{ display: 'grid', gap: '6px', marginBottom: '14px', fontWeight: 600, fontSize: '0.88rem' }}>
+                      Producto / SKU a Ingresar
                       <select
-                        value={modalTipoPaleta}
-                        onChange={(e) => setModalTipoPaleta(e.target.value as 'COMPLETO' | 'PUCHO')}
+                        value={modalProdId}
+                        onChange={(e) => {
+                          setModalProdId(e.target.value)
+                          const sel = allProducts.find((p) => String(p.id_producto) === e.target.value)
+                          if (sel?.modo_manejo === 'SERIALIZADO') {
+                            setModalNumeroSerie('')
+                            setModalSerialUnidadesAjuste('1')
+                          }
+                        }}
                         style={{
                           padding: '10px',
                           borderRadius: '6px',
@@ -1700,154 +2057,585 @@ export function InventoryPage({ onBack }: { onBack: () => void }) {
                           border: '1px solid var(--color-border)',
                           color: 'var(--color-text-primary)'
                         }}
+                        required
                       >
-                        <option value="COMPLETO">Paleta Completa Estándar ({modalSelectedProd?.cajas_por_paleta ?? 0} cajas)</option>
-                        <option value="PUCHO">Pucho / Carga Incompleta</option>
+                        {allProducts.map((p) => {
+                          const isProdSerial = p.modo_manejo === 'SERIALIZADO'
+                          return (
+                            <option key={p.id_producto} value={p.id_producto}>
+                              [{p.sku}] {p.nombre} — {isProdSerial ? 'Modo: Serializado Unitario (1 equipo/serie)' : `(${p.cajas_por_paleta} cajas/paleta, ${p.unidades_por_caja} unid/caja)`}
+                            </option>
+                          )
+                        })}
                       </select>
                     </label>
 
-                    {modalTipoPaleta === 'PUCHO' ? (
-                      <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                        Cajas en este Pucho
-                        <input
-                          type="number"
-                          min="1"
-                          value={modalCajasPucho}
-                          onChange={(e) => setModalCajasPucho(e.target.value)}
-                          required
-                        />
-                        <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                          Cajas físicas que contiene este pucho
-                        </span>
-                      </label>
+                    {isSerialModal ? (
+                      // =======================================================
+                      // VISTA ESPECÍFICA: PRODUCTO SERIALIZADO (MAQUINARIA)
+                      // =======================================================
+                      modalMode === 'rfid' ? (
+                        <>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                            <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                              <span>
+                                Número de Serie de Fábrica <span style={{ color: 'var(--color-danger)' }}>*</span>
+                              </span>
+                              <input
+                                type="text"
+                                value={modalNumeroSerie}
+                                onChange={(e) => setModalNumeroSerie(e.target.value)}
+                                placeholder="Ej. SN-CAT-2026-9042"
+                                required
+                                style={{
+                                  padding: '10px',
+                                  fontWeight: 600,
+                                  letterSpacing: '0.5px'
+                                }}
+                              />
+                              <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                Identificador único troquelado o grabado en el equipo.
+                              </span>
+                            </label>
+
+                            <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span>
+                                  Código Tag RFID <span style={{ color: 'var(--color-danger)' }}>*</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (!selectedWarehouseId) return
+                                    const suggested = await locationService.suggestNextRfidTag(
+                                      selectedWarehouseId,
+                                      selectedWarehouse?.prefijo_rfid || undefined
+                                    )
+                                    setModalUidTag(suggested)
+                                  }}
+                                  style={{
+                                    padding: '3px 10px',
+                                    fontSize: '0.74rem',
+                                    borderRadius: '4px',
+                                    background: 'var(--color-brand-soft)',
+                                    color: 'var(--color-brand)',
+                                    border: '1px solid var(--color-border)',
+                                    cursor: 'pointer',
+                                    fontWeight: 600
+                                  }}
+                                  title="Sugerir siguiente código secuencial según el prefijo oficial de este almacén"
+                                >
+                                  ⚡ Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                value={modalUidTag}
+                                onChange={(e) => setModalUidTag(e.target.value.toUpperCase())}
+                                placeholder={`Ej. ${selectedWarehouse?.prefijo_rfid || 'IMP'}00001`}
+                                required
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.5px',
+                                  textTransform: 'uppercase',
+                                  padding: '10px'
+                                }}
+                              />
+                              <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                Formato oficial: [{selectedWarehouse?.prefijo_rfid || 'PREFIJO'}][5 dígitos].
+                              </span>
+                            </label>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                            <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                              Estado Operativo Inicial
+                              <select
+                                value={modalSerialEstado}
+                                onChange={(e) => setModalSerialEstado(e.target.value as EstadoUnidadSerial)}
+                                style={{
+                                  padding: '10px',
+                                  borderRadius: '6px',
+                                  background: 'var(--color-surface)',
+                                  border: '1px solid var(--color-border)',
+                                  color: 'var(--color-text-primary)'
+                                }}
+                              >
+                                <option value="DISPONIBLE">DISPONIBLE — Operativo y listo</option>
+                                <option value="EN_MANTENIMIENTO">EN MANTENIMIENTO — Requiere revisión técnica</option>
+                              </select>
+                            </label>
+
+                            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                              <span style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary)', marginBottom: '4px' }}>Restricción logística:</span>
+                              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                <span
+                                  style={{
+                                    fontSize: '0.76rem',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    background: 'var(--color-brand-soft)',
+                                    color: 'var(--color-brand)',
+                                    fontWeight: 600,
+                                    border: '1px solid var(--color-border)'
+                                  }}
+                                >
+                                  Ubicación: {modalSelectedProd.ubicacion_permitida ?? 'AMBAS'}
+                                </span>
+                                {modalSelectedProd.requiere_equipo_izaje && (
+                                  <span
+                                    style={{
+                                      fontSize: '0.76rem',
+                                      padding: '4px 8px',
+                                      borderRadius: '4px',
+                                      background: 'rgba(188, 121, 31, 0.15)',
+                                      color: 'var(--color-warning)',
+                                      fontWeight: 600,
+                                      border: '1px solid rgba(188, 121, 31, 0.3)'
+                                    }}
+                                  >
+                                    ⚠️ Requiere izaje
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ marginBottom: '16px' }}>
+                          <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                            Unidades Físicas a Ajustar
+                            <input
+                              type="number"
+                              min="1"
+                              value={modalSerialUnidadesAjuste}
+                              onChange={(e) => setModalSerialUnidadesAjuste(e.target.value)}
+                              required
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '6px',
+                                background: 'var(--color-surface)',
+                                border: '1px solid var(--color-border)',
+                                color: 'var(--color-text-primary)',
+                                fontSize: '1.05rem',
+                                fontWeight: 600
+                              }}
+                            />
+                            <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                              Ajuste contable directo del stock disponible. Para asociar chips RFID individuales con número de serie, use la pestaña de enrolamiento con tag.
+                            </span>
+                          </label>
+                        </div>
+                      )
                     ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                        <span style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>Estiba estándar automática:</span>
-                        <strong style={{ fontSize: '1rem', color: 'var(--color-brand)' }}>
-                          {modalSelectedProd?.cajas_por_paleta ?? 0} cajas ({((modalSelectedProd?.cajas_por_paleta ?? 0) * (modalSelectedProd?.unidades_por_caja ?? 1)).toLocaleString()} unid.)
-                        </strong>
-                      </div>
+                      // =======================================================
+                      // VISTA ESTÁNDAR: PRODUCTO PALETIZADO
+                      // =======================================================
+                      modalMode === 'rfid' ? (
+                        <>
+                          <div style={{ marginBottom: '14px' }}>
+                            <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span>
+                                  Código de la Paleta (Tag RFID) <span style={{ color: 'var(--color-danger)' }}>*</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (!selectedWarehouseId) return
+                                    const suggested = await locationService.suggestNextRfidTag(
+                                      selectedWarehouseId,
+                                      selectedWarehouse?.prefijo_rfid || undefined
+                                    )
+                                    setModalUidTag(suggested)
+                                  }}
+                                  style={{
+                                    padding: '3px 10px',
+                                    fontSize: '0.74rem',
+                                    borderRadius: '4px',
+                                    background: 'var(--color-brand-soft)',
+                                    color: 'var(--color-brand)',
+                                    border: '1px solid var(--color-border)',
+                                    cursor: 'pointer',
+                                    fontWeight: 600
+                                  }}
+                                  title="Sugerir siguiente código secuencial según el prefijo oficial de este almacén"
+                                >
+                                  ⚡ Sugerir ({selectedWarehouse?.prefijo_rfid || 'TAG'})
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                value={modalUidTag}
+                                onChange={(e) => setModalUidTag(e.target.value.toUpperCase())}
+                                placeholder={`Ej. ${selectedWarehouse?.prefijo_rfid || 'IMP'}00001`}
+                                required
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.5px',
+                                  textTransform: 'uppercase',
+                                  padding: '10px'
+                                }}
+                              />
+                              <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                Formato oficial: [{selectedWarehouse?.prefijo_rfid || 'PREFIJO'}][5 dígitos]. Ingréselo manualmente o presione Sugerir.
+                              </span>
+                            </label>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '14px' }}>
+                            <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                              Tipo de Paleta / Carga
+                              <select
+                                value={modalTipoPaleta}
+                                onChange={(e) => setModalTipoPaleta(e.target.value as 'COMPLETO' | 'PUCHO')}
+                                style={{
+                                  padding: '10px',
+                                  borderRadius: '6px',
+                                  background: 'var(--color-surface)',
+                                  border: '1px solid var(--color-border)',
+                                  color: 'var(--color-text-primary)'
+                                }}
+                              >
+                                <option value="COMPLETO">Paleta Completa Estándar ({modalSelectedProd?.cajas_por_paleta ?? 0} cajas)</option>
+                                <option value="PUCHO">Pucho / Carga Incompleta</option>
+                              </select>
+                            </label>
+
+                            {modalTipoPaleta === 'PUCHO' ? (
+                              <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                                Cajas en este Pucho
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={modalCajasPucho}
+                                  onChange={(e) => setModalCajasPucho(e.target.value)}
+                                  required
+                                />
+                                <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                  Cajas físicas que contiene este pucho
+                                </span>
+                              </label>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                                <span style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>Estiba estándar automática:</span>
+                                <strong style={{ fontSize: '1rem', color: 'var(--color-brand)' }}>
+                                  {modalSelectedProd?.cajas_por_paleta ?? 0} cajas ({((modalSelectedProd?.cajas_por_paleta ?? 0) * (modalSelectedProd?.unidades_por_caja ?? 1)).toLocaleString()} unid.)
+                                </strong>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '16px' }}>
+                          <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                            Paletas Completas
+                            <input
+                              type="number"
+                              min="0"
+                              value={modalPaletas}
+                              onChange={(e) => setModalPaletas(e.target.value)}
+                              required
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '6px',
+                                background: 'var(--color-surface)',
+                                border: '1px solid var(--color-border)',
+                                color: 'var(--color-text-primary)',
+                                fontSize: '1.05rem',
+                                fontWeight: 600
+                              }}
+                            />
+                            <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                              Estiba estándar ({modalSelectedProd?.cajas_por_paleta ?? 1} cajas c/u)
+                            </span>
+                          </label>
+
+                          <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
+                            Puchos (cajas sueltas)
+                            <input
+                              type="number"
+                              min="0"
+                              value={modalPuchos}
+                              onChange={(e) => setModalPuchos(e.target.value)}
+                              required
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '6px',
+                                background: 'var(--color-surface)',
+                                border: '1px solid var(--color-border)',
+                                color: 'var(--color-text-primary)',
+                                fontSize: '1.05rem',
+                                fontWeight: 600
+                              }}
+                            />
+                            <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                              Cajas que no completan una paleta
+                            </span>
+                          </label>
+                        </div>
+                      )
                     )}
-                  </div>
+
+                    {/* Previsualización en Tiempo Real */}
+                    {isSerialModal ? (
+                      <div
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: '6px',
+                          background: 'var(--color-brand-soft)',
+                          border: '1px solid var(--color-border)',
+                          marginBottom: '16px'
+                        }}
+                      >
+                        <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-brand-deep)' }}>
+                          Ficha técnica del equipo a ingresar
+                        </p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+                          <div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Cantidad a ingresar:</span>
+                            <strong style={{ color: 'var(--color-brand)', fontSize: '1.05rem' }}>
+                              {modalMode === 'rfid' ? '+1 unidad única' : `+${modalSerialUnidadesAjuste} unid.`}
+                            </strong>
+                          </div>
+                          <div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Peso unitario:</span>
+                            <strong>{modalSelectedProd.peso_unitario_kg ? `${modalSelectedProd.peso_unitario_kg} kg` : '—'}</strong>
+                          </div>
+                          <div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Dimensiones (L×An×Al):</span>
+                            <strong>
+                              {modalSelectedProd.largo_cm && modalSelectedProd.ancho_cm && modalSelectedProd.alto_cm
+                                ? `${modalSelectedProd.largo_cm}×${modalSelectedProd.ancho_cm}×${modalSelectedProd.alto_cm} cm`
+                                : '—'}
+                            </strong>
+                          </div>
+                          {modalPreview?.volumenM3 && (
+                            <div>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Volumen:</span>
+                              <strong>{modalPreview.volumenM3} m³</strong>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      modalPreview && (
+                        <div
+                          style={{
+                            padding: '12px 14px',
+                            borderRadius: '6px',
+                            background: 'var(--color-brand-soft)',
+                            border: '1px solid var(--color-border)',
+                            marginBottom: '16px'
+                          }}
+                        >
+                          <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-brand-deep)' }}>
+                            Cálculo logístico de conversión
+                          </p>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
+                            <div>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Cajas por paleta:</span>
+                              <strong>{modalPreview.cajasPorPaleta} cajas</strong>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total cajas:</span>
+                              <strong>{modalPreview.totalCajas} cajas</strong>
+                            </div>
+                            <div>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total unidades:</span>
+                              <strong style={{ color: 'var(--color-brand)', fontSize: '1.05rem' }}>{modalPreview.totalUnidades.toLocaleString()} unid.</strong>
+                            </div>
+                            {modalPreview.volumenM3 && (
+                              <div>
+                                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Volumen:</span>
+                                <strong>{modalPreview.volumenM3} m³</strong>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    )}
+
+                    <label style={{ display: 'grid', gap: '6px', marginBottom: '20px', fontWeight: 600, fontSize: '0.88rem' }}>
+                      Motivo del Movimiento / Ajuste
+                      <input
+                        type="text"
+                        value={modalMotivo}
+                        onChange={(e) => setModalMotivo(e.target.value)}
+                        placeholder="Ej. Ingreso inicial de lote, conteo físico, etc."
+                        required
+                      />
+                    </label>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                      <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => setShowAdjustModal(false)}
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        className="button"
+                        type="submit"
+                        disabled={savingAdjust}
+                      >
+                        {savingAdjust
+                          ? 'Guardando en Almacén…'
+                          : isSerialModal
+                          ? modalMode === 'rfid'
+                            ? 'Registrar Equipo e Ingresar Stock (+1 unid.)'
+                            : `Confirmar e Impactar Stock (+${modalSerialUnidadesAjuste} unid.)`
+                          : modalMode === 'rfid'
+                          ? `Registrar Paleta e Ingresar Stock (+${modalPreview?.totalUnidades?.toLocaleString() ?? 0} unid.)`
+                          : 'Confirmar e Impactar Stock'}
+                      </button>
+                    </div>
+                  </form>
                 </>
-              ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '16px' }}>
-                  <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                    Paletas Completas
-                    <input
-                      type="number"
-                      min="0"
-                      value={modalPaletas}
-                      onChange={(e) => setModalPaletas(e.target.value)}
-                      required
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: '6px',
-                        background: 'var(--color-surface)',
-                        border: '1px solid var(--color-border)',
-                        color: 'var(--color-text-primary)',
-                        fontSize: '1.05rem',
-                        fontWeight: 600
-                      }}
-                    />
-                    <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                      Estiba estándar ({modalSelectedProd?.cajas_por_paleta ?? 1} cajas c/u)
-                    </span>
-                  </label>
+              )
+            })()}
+          </div>
+        </div>
+      )}
 
-                  <label style={{ display: 'grid', gap: '6px', fontWeight: 600, fontSize: '0.88rem' }}>
-                    Puchos (cajas sueltas)
-                    <input
-                      type="number"
-                      min="0"
-                      value={modalPuchos}
-                      onChange={(e) => setModalPuchos(e.target.value)}
-                      required
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: '6px',
-                        background: 'var(--color-surface)',
-                        border: '1px solid var(--color-border)',
-                        color: 'var(--color-text-primary)',
-                        fontSize: '1.05rem',
-                        fontWeight: 600
-                      }}
-                    />
-                    <span style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
-                      Cajas que no completan una paleta
-                    </span>
-                  </label>
-                </div>
-              )}
+      {/* MODAL 2: Inspección y Control de Unidades Serializadas en esta Sede */}
+      {inspectSerialProd && (
+        <div className="modal-overlay" onClick={() => setInspectSerialProd(null)}>
+          <div className="modal-window" style={{ maxWidth: '780px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">EQUIPOS SERIALIZADOS EN SEDE</p>
+                <h3>[{inspectSerialProd.product.sku}] {inspectSerialProd.product.nombre}</h3>
+                <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.86rem' }}>
+                  Almacén: <strong>{selectedWarehouse?.nombre}</strong> · Total registrados: <strong>{inspectSerialProd.units.length} equipos</strong>
+                </p>
+              </div>
+              <button
+                className="modal-close-btn"
+                type="button"
+                onClick={() => setInspectSerialProd(null)}
+              >
+                ✕
+              </button>
+            </div>
 
-              {modalPreview && (
-                <div
-                  style={{
-                    padding: '12px 14px',
-                    borderRadius: '6px',
-                    background: 'var(--color-brand-soft)',
-                    border: '1px solid var(--color-border)',
-                    marginBottom: '16px'
+            {inspectSerialProd.units.length === 0 ? (
+              <div style={{ padding: '30px', textAlign: 'center', background: 'var(--color-canvas)', borderRadius: '6px', margin: '14px 0' }}>
+                <p className="muted" style={{ margin: '0 0 12px' }}>
+                  No hay unidades físicas serializadas enroladas con RFID para este producto en este almacén.
+                </p>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => {
+                    setModalProdId(String(inspectSerialProd.product.id_producto))
+                    setModalMode('rfid')
+                    setModalNumeroSerie('')
+                    setInspectSerialProd(null)
+                    setShowAdjustModal(true)
                   }}
                 >
-                  <p style={{ margin: '0 0 8px', fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-brand-deep)' }}>
-                    Cálculo logístico de conversión
-                  </p>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px' }}>
-                    <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Cajas por paleta:</span>
-                      <strong>{modalPreview.cajasPorPaleta} cajas</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total cajas:</span>
-                      <strong>{modalPreview.totalCajas} cajas</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Total unidades:</span>
-                      <strong style={{ color: 'var(--color-brand)', fontSize: '1.05rem' }}>{modalPreview.totalUnidades.toLocaleString()} unid.</strong>
-                    </div>
-                    {modalPreview.volumenM3 && (
-                      <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', display: 'block' }}>Volumen:</span>
-                        <strong>{modalPreview.volumenM3} m³</strong>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <label style={{ display: 'grid', gap: '6px', marginBottom: '20px', fontWeight: 600, fontSize: '0.88rem' }}>
-                Motivo del Movimiento / Ajuste
-                <input
-                  type="text"
-                  value={modalMotivo}
-                  onChange={(e) => setModalMotivo(e.target.value)}
-                  placeholder="Ej. Ingreso inicial de lote, conteo físico, etc."
-                  required
-                />
-              </label>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => setShowAdjustModal(false)}
-                >
-                  Cancelar
-                </button>
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={savingAdjust}
-                >
-                  {savingAdjust
-                    ? 'Guardando en Almacén…'
-                    : modalMode === 'rfid'
-                    ? `Registrar Paleta e Ingresar Stock (+${modalPreview?.totalUnidades?.toLocaleString() ?? 0} unid.)`
-                    : 'Confirmar e Impactar Stock'}
+                  + Enrolar Primer Equipo con Chip RFID
                 </button>
               </div>
-            </form>
+            ) : (
+              <div className="table-wrap" style={{ margin: '14px 0', maxHeight: '360px', overflowY: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>N° Serie de Fábrica</th>
+                      <th>Tag RFID Asignado</th>
+                      <th>Estado Operativo</th>
+                      <th>Fecha de Ingreso</th>
+                      <th style={{ textAlign: 'center' }}>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inspectSerialProd.units.map((u) => {
+                      const tagUid = u.etiqueta_rfid?.uid_tag || 'Sin Tag'
+                      return (
+                        <tr key={u.id_unidad}>
+                          <td>
+                            <strong style={{ color: 'var(--color-brand-deep)' }}>{u.numero_serie}</strong>
+                          </td>
+                          <td>
+                            <span
+                              style={{
+                                fontFamily: 'monospace',
+                                fontWeight: 700,
+                                background: 'var(--color-brand-soft)',
+                                color: 'var(--color-brand)',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                fontSize: '0.84rem'
+                              }}
+                            >
+                              🏷️ {tagUid}
+                            </span>
+                          </td>
+                          <td>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontSize: '0.78rem',
+                                fontWeight: 600,
+                                background: u.estado === 'DISPONIBLE' ? 'rgba(47, 125, 79, 0.15)' : 'rgba(188, 121, 31, 0.15)',
+                                color: u.estado === 'DISPONIBLE' ? 'var(--color-success)' : 'var(--color-warning)',
+                                border: `1px solid ${u.estado === 'DISPONIBLE' ? 'rgba(47, 125, 79, 0.3)' : 'rgba(188, 121, 31, 0.3)'}`
+                              }}
+                            >
+                              ● {u.estado}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
+                            {new Date(u.fecha_ingreso).toLocaleString()}
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              className="btn-detail"
+                              disabled={updatingUnitState}
+                              onClick={() => handleToggleUnitState(u)}
+                              title={u.estado === 'DISPONIBLE' ? 'Poner en Mantenimiento' : 'Marcar como Disponible'}
+                            >
+                              {u.estado === 'DISPONIBLE' ? 'Mantenimiento' : 'Habilitar'}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setInspectSerialProd(null)}
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={() => {
+                  setModalProdId(String(inspectSerialProd.product.id_producto))
+                  setModalMode('rfid')
+                  setModalNumeroSerie('')
+                  setInspectSerialProd(null)
+                  setShowAdjustModal(true)
+                }}
+              >
+                + Enrolar Otro Equipo
+              </button>
+            </div>
           </div>
         </div>
       )}

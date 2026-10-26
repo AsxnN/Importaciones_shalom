@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "01c4c26e-a503-499f-a4ed-881a01c93d41"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.importacionesshalom.almacenshalomweb",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    }
+  }
+}

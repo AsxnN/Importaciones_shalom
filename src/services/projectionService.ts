@@ -1,6 +1,8 @@
 import { supabase } from '../lib/supabase'
 import type {
+  CalculableColumnKey,
   CalculatedProjectionRow,
+  CustomProjectionColumn,
   ProjectionItem,
   ProjectionTemplate,
   TemplateParamsForm
@@ -21,8 +23,12 @@ const DEFAULT_TEMPLATES: ProjectionTemplate[] = [
     formula_seguridad: 'stock_min * seguridad_pct',
     formula_stock_min_f: 'stock_min + seguridad',
     formula_compra: 'stock_redondeado * factor_compra',
-    formula_meses_duracion: 'stock_real / (PROM_MEN > 0 ? PROM_MEN : 1)',
+    formula_meses_duracion: '(stock_real * lead_time_meses) / stock_redondeado',
+    formula_stock_redondeado: 'CEIL(STOCK_MIN_F / 1000) * 1000',
     columnas_meses: ['SEP', 'OCT', 'NOV', 'DIC', 'ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL'],
+    mes_inicio_promedio: 'SEP',
+    mes_fin_promedio: 'JUL',
+    ignorar_meses_cero: true,
     activo: true
   },
   {
@@ -38,8 +44,12 @@ const DEFAULT_TEMPLATES: ProjectionTemplate[] = [
     formula_seguridad: 'stock_min * seguridad_pct',
     formula_stock_min_f: 'stock_min + seguridad',
     formula_compra: 'stock_redondeado * factor_compra',
-    formula_meses_duracion: 'stock_real / (PROM_MEN > 0 ? PROM_MEN : 1)',
+    formula_meses_duracion: '(stock_real * lead_time_meses) / stock_redondeado',
+    formula_stock_redondeado: 'CEIL(STOCK_MIN_F / 100) * 100',
     columnas_meses: [],
+    mes_inicio_promedio: null,
+    mes_fin_promedio: null,
+    ignorar_meses_cero: true,
     activo: true
   }
 ]
@@ -312,13 +322,39 @@ export const projectionService = {
         .eq('activo', true)
         .order('id_plantilla', { ascending: true })
 
-      if (error || !data || data.length === 0) {
-        return DEFAULT_TEMPLATES
-      }
+      const rawList =
+        error || !data || data.length === 0 ? DEFAULT_TEMPLATES : (data as ProjectionTemplate[])
 
-      return data as ProjectionTemplate[]
+      return rawList.map((tpl) => {
+        let customCols: CustomProjectionColumn[] = []
+        if (Array.isArray(tpl.columnas_personalizadas) && tpl.columnas_personalizadas.length > 0) {
+          customCols = tpl.columnas_personalizadas
+        } else {
+          try {
+            const stored = localStorage.getItem(`shalom_custom_columns_${tpl.id_plantilla}`)
+            if (stored) {
+              const parsed = JSON.parse(stored)
+              if (Array.isArray(parsed)) customCols = parsed
+            }
+          } catch {}
+        }
+        return {
+          ...tpl,
+          columnas_personalizadas: customCols
+        }
+      })
     } catch {
-      return DEFAULT_TEMPLATES
+      return DEFAULT_TEMPLATES.map((tpl) => {
+        let customCols: CustomProjectionColumn[] = []
+        try {
+          const stored = localStorage.getItem(`shalom_custom_columns_${tpl.id_plantilla}`)
+          if (stored) {
+            const parsed = JSON.parse(stored)
+            if (Array.isArray(parsed)) customCols = parsed
+          }
+        } catch {}
+        return { ...tpl, columnas_personalizadas: customCols }
+      })
     }
   },
 
@@ -393,23 +429,151 @@ export const projectionService = {
     form: TemplateParamsForm
   ): Promise<{ success: boolean; error?: string }> {
     try {
+      const payload: Record<string, any> = {
+        lead_time_meses: form.lead_time_meses,
+        seguridad_pct: form.seguridad_pct,
+        factor_compra: form.factor_compra,
+        dias_por_mes: form.dias_por_mes,
+        updated_at: new Date().toISOString()
+      }
+
+      if (form.formula_stock_min !== undefined) payload.formula_stock_min = form.formula_stock_min
+      if (form.formula_seguridad !== undefined) payload.formula_seguridad = form.formula_seguridad
+      if (form.formula_stock_min_f !== undefined) payload.formula_stock_min_f = form.formula_stock_min_f
+      if (form.formula_compra !== undefined) payload.formula_compra = form.formula_compra
+      if (form.formula_meses_duracion !== undefined) payload.formula_meses_duracion = form.formula_meses_duracion
+      if (form.formula_stock_redondeado !== undefined) payload.formula_stock_redondeado = form.formula_stock_redondeado
+      if (form.mes_inicio_promedio !== undefined) payload.mes_inicio_promedio = form.mes_inicio_promedio
+      if (form.mes_fin_promedio !== undefined) payload.mes_fin_promedio = form.mes_fin_promedio
+      if (form.ignorar_meses_cero !== undefined) payload.ignorar_meses_cero = form.ignorar_meses_cero
+
       const { error } = await supabase
         .from('plantilla_proyeccion')
-        .update({
+        .update(payload)
+        .eq('id_plantilla', id_plantilla)
+
+      if (error) {
+        // Si falló por columnas adicionales no migradas aún, reintentar con las columnas base
+        const fallbackPayload = {
           lead_time_meses: form.lead_time_meses,
           seguridad_pct: form.seguridad_pct,
           factor_compra: form.factor_compra,
           dias_por_mes: form.dias_por_mes,
           updated_at: new Date().toISOString()
-        })
-        .eq('id_plantilla', id_plantilla)
+        }
+        const { error: fallbackErr } = await supabase
+          .from('plantilla_proyeccion')
+          .update(fallbackPayload)
+          .eq('id_plantilla', id_plantilla)
 
-      if (error) {
-        return { success: false, error: error.message }
+        if (fallbackErr) {
+          return { success: false, error: fallbackErr.message }
+        }
       }
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message || 'Error al actualizar parámetros.' }
+    }
+  },
+
+  // 4b. Guardar y persistir columnas personalizadas de la plantilla
+  async saveCustomColumns(
+    id_plantilla: number,
+    columns: CustomProjectionColumn[]
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      localStorage.setItem(`shalom_custom_columns_${id_plantilla}`, JSON.stringify(columns))
+      const { error } = await supabase
+        .from('plantilla_proyeccion')
+        .update({
+          columnas_personalizadas: columns,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id_plantilla', id_plantilla)
+
+      if (error) {
+        console.warn('Aviso de persistencia remota para columnas personalizadas:', error.message)
+      }
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  },
+
+  // 4c. Actualizar la ecuación de una columna específica (estándar o personalizada)
+  async updateColumnFormula(
+    id_plantilla: number,
+    columnKey: CalculableColumnKey,
+    newFormula: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const columnFieldMap: Record<string, string> = {
+        stock_min: 'formula_stock_min',
+        seguridad: 'formula_seguridad',
+        stock_min_f: 'formula_stock_min_f',
+        stock_min_redondeado: 'formula_stock_redondeado',
+        compra_sugerida: 'formula_compra',
+        meses_duracion: 'formula_meses_duracion'
+      }
+
+      const dbField = columnFieldMap[columnKey]
+      if (!dbField) {
+        // Columna personalizada
+        try {
+          const stored = localStorage.getItem(`shalom_custom_columns_${id_plantilla}`)
+          let customCols: CustomProjectionColumn[] = stored ? JSON.parse(stored) : []
+          const found = customCols.find((c) => c.id === columnKey)
+          if (found) {
+            customCols = customCols.map((c) =>
+              c.id === columnKey ? { ...c, formula: newFormula } : c
+            )
+            return this.saveCustomColumns(id_plantilla, customCols)
+          }
+        } catch {}
+        return { success: false, error: `Columna no configurable: ${columnKey}` }
+      }
+
+      const { error } = await supabase
+        .from('plantilla_proyeccion')
+        .update({
+          [dbField]: newFormula,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id_plantilla', id_plantilla)
+
+      if (error) {
+        console.warn(`Aviso de persistencia en Supabase para ${dbField}:`, error.message)
+      }
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  },
+
+  // 4c. Actualizar rango de meses para cálculo de promedio
+  async updateMonthRange(
+    id_plantilla: number,
+    startMonth: string | null,
+    endMonth: string | null,
+    ignoreZero: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const { error } = await supabase
+        .from('plantilla_proyeccion')
+        .update({
+          mes_inicio_promedio: startMonth,
+          mes_fin_promedio: endMonth,
+          ignorar_meses_cero: ignoreZero,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id_plantilla', id_plantilla)
+
+      if (error) {
+        console.warn('Aviso de persistencia en Supabase para rango de meses:', error.message)
+      }
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message }
     }
   },
 

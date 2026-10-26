@@ -8,6 +8,8 @@ type ProductOption = {
   nombre: string
   unidades_por_caja: number
   cajas_por_paleta: number
+  modo_manejo?: string
+  ubicacion_permitida?: 'CAMPO' | 'RACK' | 'AMBAS'
 }
 
 type Props = {
@@ -133,6 +135,39 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
     })
   }, [pallets, campoCells, warehouseId])
 
+  // Validación de compatibilidad Celda vs Tipo de Producto
+  const isTargetRack = targetCell?.tipo_ubicacion === 'RACK'
+  const isTargetCampo = targetCell?.tipo_ubicacion === 'CAMPO' || targetCell?.codigo_ubicacion?.includes('CAMPO')
+
+  const currentSelectedPallet = useMemo(() => {
+    return unassignedPallets.find((p) => String(p.id_etiqueta) === selectedPalletId) || null
+  }, [unassignedPallets, selectedPalletId])
+
+  const currentPalletProd = useMemo(() => {
+    if (!currentSelectedPallet) return null
+    return products.find((pr) => pr.id_producto === currentSelectedPallet.id_producto) || null
+  }, [currentSelectedPallet, products])
+
+  const isCurrentPalletRestrictedToCampo = useMemo(() => {
+    if (!currentSelectedPallet) return false
+    const modo = currentPalletProd?.modo_manejo || currentSelectedPallet.producto?.modo_manejo
+    const ubic = currentPalletProd?.ubicacion_permitida || currentSelectedPallet.producto?.ubicacion_permitida || (modo === 'SERIALIZADO' ? 'CAMPO' : 'AMBAS')
+    return modo === 'SERIALIZADO' && ubic === 'CAMPO'
+  }, [currentSelectedPallet, currentPalletProd])
+
+  const currentNewProd = useMemo(() => {
+    return products.find((p) => String(p.id_producto) === newProdId) || null
+  }, [products, newProdId])
+
+  const isNewProdRestrictedToCampo = useMemo(() => {
+    if (!currentNewProd) return false
+    const modo = currentNewProd.modo_manejo
+    const ubic = currentNewProd.ubicacion_permitida || (modo === 'SERIALIZADO' ? 'CAMPO' : 'AMBAS')
+    return modo === 'SERIALIZADO' && ubic === 'CAMPO'
+  }, [currentNewProd])
+
+  const isAssignBlocked = Boolean(isTargetRack && (assignMode === 'existing' ? isCurrentPalletRestrictedToCampo : isNewProdRestrictedToCampo))
+
   // Métricas del almacén
   const metrics = useMemo(() => {
     const totalSlots = rackCells.length
@@ -241,8 +276,38 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
   // Abrir modal de asignación para una celda
   async function handleOpenAssign(cell: RackCell) {
     setTargetCell(cell)
+    const isRack = cell.tipo_ubicacion === 'RACK'
+
+    // Filtrar paletas que sean elegibles según la regla de ubicación
+    const eligiblePallets = unassignedPallets.filter((p) => {
+      if (!isRack) return true // En Zona Campo todo producto es apto
+      const prod = products.find((pr) => pr.id_producto === p.id_producto)
+      const modo = prod?.modo_manejo || p.producto?.modo_manejo
+      const ubic = prod?.ubicacion_permitida || p.producto?.ubicacion_permitida || (modo === 'SERIALIZADO' ? 'CAMPO' : 'AMBAS')
+      return !(modo === 'SERIALIZADO' && ubic === 'CAMPO')
+    })
+
     setAssignMode(unassignedPallets.length > 0 ? 'existing' : 'new')
-    setSelectedPalletId(unassignedPallets[0]?.id_etiqueta ? String(unassignedPallets[0].id_etiqueta) : '')
+    setSelectedPalletId(
+      eligiblePallets[0]?.id_etiqueta
+        ? String(eligiblePallets[0].id_etiqueta)
+        : unassignedPallets[0]?.id_etiqueta
+        ? String(unassignedPallets[0].id_etiqueta)
+        : ''
+    )
+
+    // Preseleccionar un producto permitido si se crea nueva paleta
+    if (isRack) {
+      const allowedProd = products.find(
+        (p) => !(p.modo_manejo === 'SERIALIZADO' && (p.ubicacion_permitida === 'CAMPO' || !p.ubicacion_permitida))
+      )
+      if (allowedProd) {
+        setNewProdId(String(allowedProd.id_producto))
+      }
+    } else if (products[0]) {
+      setNewProdId(String(products[0].id_producto))
+    }
+
     try {
       const suggestedTag = await locationService.suggestNextRfidTag(warehouseId)
       setNewUidTag(suggestedTag)
@@ -256,6 +321,13 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
   async function handleSaveAssign(e: React.FormEvent) {
     e.preventDefault()
     if (!targetCell) return
+
+    if (isAssignBlocked) {
+      setErrorMsg(
+        'Operación no permitida: Los productos de categoría Serializado unitario configurados para Zona Campo no pueden ubicarse en celdas de rack Drive-In.'
+      )
+      return
+    }
 
     setSavingAssign(true)
     setErrorMsg(null)
@@ -1321,11 +1393,27 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                     onChange={(e) => setSelectedPalletId(e.target.value)}
                     style={{ width: '100%', padding: '8px', border: '1px solid var(--color-border)', borderRadius: '4px' }}
                   >
-                    {unassignedPallets.map((p) => (
-                      <option key={p.id_etiqueta} value={p.id_etiqueta}>
-                        {p.producto?.sku} · Tag: {p.uid_tag} ({p.cantidad_paquetes} bultos)
-                      </option>
-                    ))}
+                    {unassignedPallets.map((p) => {
+                      const prod = products.find((pr) => pr.id_producto === p.id_producto)
+                      const modo = prod?.modo_manejo || p.producto?.modo_manejo
+                      const ubic = prod?.ubicacion_permitida || p.producto?.ubicacion_permitida || (modo === 'SERIALIZADO' ? 'CAMPO' : 'AMBAS')
+                      const isRestrictedForRack = isTargetRack && modo === 'SERIALIZADO' && ubic === 'CAMPO'
+
+                      return (
+                        <option
+                          key={p.id_etiqueta}
+                          value={p.id_etiqueta}
+                          disabled={isRestrictedForRack}
+                        >
+                          {p.producto?.sku} · Tag: {p.uid_tag} ({p.cantidad_paquetes} bultos)
+                          {isRestrictedForRack
+                            ? ' — ⛔ Exclusivo Zona Campo (Serializado)'
+                            : modo === 'SERIALIZADO'
+                            ? ' — (Serializado unitario)'
+                            : ' — (Paletizado estándar)'}
+                        </option>
+                      )
+                    })}
                   </select>
                 </div>
               ) : (
@@ -1339,11 +1427,26 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                       onChange={(e) => setNewProdId(e.target.value)}
                       style={{ width: '100%', padding: '8px', border: '1px solid var(--color-border)', borderRadius: '4px' }}
                     >
-                      {products.map((p) => (
-                        <option key={p.id_producto} value={p.id_producto}>
-                          {p.sku} — {p.nombre}
-                        </option>
-                      ))}
+                      {products.map((p) => {
+                        const isSerial = p.modo_manejo === 'SERIALIZADO'
+                        const ubic = p.ubicacion_permitida || (isSerial ? 'CAMPO' : 'AMBAS')
+                        const isRestrictedForRack = isTargetRack && isSerial && ubic === 'CAMPO'
+
+                        return (
+                          <option
+                            key={p.id_producto}
+                            value={p.id_producto}
+                            disabled={isRestrictedForRack}
+                          >
+                            {p.sku} — {p.nombre}
+                            {isRestrictedForRack
+                              ? ' [⛔ Solo Zona Campo - Maquinaria]'
+                              : isSerial
+                              ? ' [Serializado unitario]'
+                              : ' [Paletizado estándar]'}
+                          </option>
+                        )
+                      })}
                     </select>
                   </div>
 
@@ -1391,6 +1494,47 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                 </>
               )}
 
+              {/* Mensaje de Restricción Operativa Drive-In vs Zona Campo */}
+              {isAssignBlocked && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(179, 64, 42, 0.08)',
+                    border: '1px solid var(--color-danger)',
+                    borderRadius: '6px',
+                    padding: '12px 14px',
+                    color: 'var(--color-danger)',
+                    fontSize: '13px',
+                    lineHeight: '1.45'
+                  }}
+                >
+                  <strong style={{ display: 'block', marginBottom: '4px' }}>
+                    ⛔ Restricción Operativa: Ubicación No Permitida
+                  </strong>
+                  <span>
+                    El producto seleccionado pertenece al modo <strong>Serializado unitario</strong> (maquinaria o equipos sobredimensionados) y está restringido a <strong>Zona Campo</strong>. No puede alojarse en celdas de altura en el rack Drive-In.
+                  </span>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                    💡 <em>Regla de asignación:</em> Los productos de <strong>Paletizado estándar</strong> pueden alojarse tanto en celdas de rack como en Zona Campo. Las unidades serializadas exclusivas de campo solo pueden ubicarse en la <strong>Zona Campo</strong>.
+                  </div>
+                </div>
+              )}
+
+              {/* Mensaje de Contexto para Zona Campo */}
+              {isTargetCampo && !isAssignBlocked && (
+                <div
+                  style={{
+                    backgroundColor: 'var(--color-brand-soft)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: '6px',
+                    padding: '10px 14px',
+                    color: 'var(--color-brand-deep)',
+                    fontSize: '12.5px'
+                  }}
+                >
+                  📍 <strong>Zona Campo (Piso libre):</strong> Admite tanto maquinaria serializada sobredimensionada como paletas de estiba estándar.
+                </div>
+              )}
+
               <div className="modal-actions" style={{ justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
                 <button
                   type="button"
@@ -1400,7 +1544,12 @@ export function RackLocationsSubView({ warehouseId, warehouseName, products }: P
                 >
                   Cancelar
                 </button>
-                <button type="submit" className="action-button primary" disabled={savingAssign}>
+                <button
+                  type="submit"
+                  className="action-button primary"
+                  disabled={savingAssign || isAssignBlocked}
+                  style={isAssignBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+                >
                   {savingAssign ? 'Asignando…' : 'Aceptar y asignar'}
                 </button>
               </div>

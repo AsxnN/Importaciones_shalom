@@ -21,6 +21,7 @@ export interface ProductOption {
   sku: string
   nombre: string
   descripcion?: string | null
+  modo_manejo?: string
   unidades_por_caja: number
   cajas_por_paleta: number
   peso_caja_kg?: number | null
@@ -74,7 +75,7 @@ export const receptionService = {
     }
   },
 
-  // 3. Obtener productos activos con regla de empaque calculada
+  // 3. Obtener productos activos con regla de empaque calculada y modo de manejo
   async getActiveProducts(): Promise<ProductOption[]> {
     try {
       const { data, error } = await supabase
@@ -84,6 +85,9 @@ export const receptionService = {
           sku,
           nombre,
           descripcion,
+          categoria (
+            modo_manejo
+          ),
           regla_empaque (
             unidades_por_caja,
             cajas_por_camada,
@@ -109,11 +113,15 @@ export const receptionService = {
           cajasPaleta = rawRegla.cajas_por_camita * rawRegla.camitas_por_paleta
         }
 
+        const cat = Array.isArray(p.categoria) ? p.categoria[0] : p.categoria
+        const modo = cat?.modo_manejo || 'PALETIZADO'
+
         return {
           id_producto: p.id_producto,
           sku: p.sku,
           nombre: p.nombre,
           descripcion: p.descripcion,
+          modo_manejo: modo,
           unidades_por_caja: unidCaja,
           cajas_por_paleta: Math.max(1, cajasPaleta),
           peso_caja_kg: rawRegla?.peso_caja_kg || null

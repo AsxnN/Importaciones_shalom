@@ -42,6 +42,7 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
   const [destinatario, setDestinatario] = useState('')
   const [documentoRef, setDocumentoRef] = useState('')
   const [motivo, setMotivo] = useState('')
+  const [dispatchUnits, setDispatchUnits] = useState<string>('')
   const [executing, setExecuting] = useState(false)
 
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
@@ -137,6 +138,14 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
     return activePallets.find((p) => String(p.id_etiqueta) === selectedPalletId) || null
   }, [selectedPalletId, activePallets])
 
+  useEffect(() => {
+    if (currentPallet) {
+      setDispatchUnits(String(currentPallet.cantidad_actual || currentPallet.cantidad_paquetes || 1))
+    } else {
+      setDispatchUnits('')
+    }
+  }, [currentPallet])
+
   // Filtrado de paletas activas para la tabla
   const filteredActivePallets = useMemo(() => {
     if (!searchPalletQuery.trim()) return activePallets
@@ -202,8 +211,10 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
 
         setSuccessMsg(msg)
       } else {
-        // --- CASO B: SALIDA DEFINITIVA FUERA DE LA EMPRESA ---
-        const units = Number(currentPallet.cantidad_actual) || Number(currentPallet.cantidad_paquetes) || 1
+        // --- CASO B: SALIDA DEFINITIVA FUERA DE LA EMPRESA (O PICKING PARCIAL) ---
+        const totalUnits = Number(currentPallet.cantidad_actual) || Number(currentPallet.cantidad_paquetes) || 1
+        const requestedUnits = Number(dispatchUnits) || totalUnits
+        const units = Math.max(1, Math.min(requestedUnits, totalUnits))
         const cajas = Number(currentPallet.cantidad_paquetes) || 1
 
         const res = await locationService.dispatchPalletOutside({
@@ -402,11 +413,16 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
                     style={{ fontSize: '0.95rem', padding: '10px' }}
                   >
                     <option value="">-- Selecciona una paleta de la lista --</option>
-                    {activePallets.map((p) => (
-                      <option key={p.id_etiqueta} value={String(p.id_etiqueta)}>
-                        [{p.uid_tag}] {p.producto?.sku} — {p.producto?.nombre} ({p.cantidad_paquetes} cajas, {p.cantidad_actual} unid.) {p.codigo_ubicacion ? `| Ubic: ${p.codigo_ubicacion}` : ''}
-                      </option>
-                    ))}
+                    {activePallets.map((p) => {
+                      const esSerial = p.producto?.modo_manejo === 'SERIALIZADO'
+                      return (
+                        <option key={p.id_etiqueta} value={String(p.id_etiqueta)}>
+                          [{p.uid_tag}] {p.producto?.sku} — {p.producto?.nombre} (
+                          {esSerial ? 'Serializado: 1 unidad' : `${p.cantidad_paquetes} cajas, ${p.cantidad_actual} unid.`}
+                          ) {p.codigo_ubicacion ? `| Ubic: ${p.codigo_ubicacion}` : ''}
+                        </option>
+                      )
+                    })}
                   </select>
 
                   {/* Ficha rápida de la paleta seleccionada */}
@@ -433,10 +449,31 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
                         <div style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)' }}>{currentPallet.producto?.nombre}</div>
                       </div>
                       <div>
-                        <span className="muted" style={{ display: 'block' }}>Carga física</span>
-                        <strong>{currentPallet.cantidad_paquetes} cajas</strong> ({Number(currentPallet.cantidad_actual || 0).toLocaleString()} unid.)
-                        <span style={{ fontSize: '0.75rem', display: 'block', color: currentPallet.tipo_paleta === 'COMPLETO' ? 'var(--color-brand)' : 'var(--color-warning)' }}>
-                          Tipo: {currentPallet.tipo_paleta}
+                        <span className="muted" style={{ display: 'block' }}>Carga física / Modo</span>
+                        <strong>
+                          {currentPallet.producto?.modo_manejo === 'SERIALIZADO'
+                            ? '1 unidad serializada'
+                            : `${currentPallet.cantidad_paquetes} cajas`}
+                        </strong>{' '}
+                        ({Number(currentPallet.cantidad_actual || 0).toLocaleString()} unid.)
+                        <span
+                          style={{
+                            fontSize: '0.75rem',
+                            display: 'block',
+                            color:
+                              currentPallet.producto?.modo_manejo === 'SERIALIZADO'
+                                ? 'var(--color-warning)'
+                                : currentPallet.tipo_paleta === 'COMPLETO'
+                                ? 'var(--color-brand)'
+                                : 'var(--color-warning)'
+                          }}
+                        >
+                          Modo:{' '}
+                          {currentPallet.producto?.modo_manejo === 'SERIALIZADO'
+                            ? 'Serializado unitario'
+                            : currentPallet.tipo_paleta === 'COMPLETO'
+                            ? 'Paleta completa'
+                            : 'Pucho'}
                         </span>
                       </div>
                       <div>
@@ -605,6 +642,46 @@ export function MovementsPage({ onBack }: { onBack: () => void }) {
                     />
                   </div>
                 </div>
+
+                {/* Selector de cantidad a despachar (Picking de unidades vs Bulto entero) */}
+                {currentPallet && (
+                  <div className="form-group" style={{ marginBottom: '14px', background: 'var(--color-surface)', padding: '12px 14px', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                    <label style={{ display: 'block', fontWeight: 600, fontSize: '0.88rem', marginBottom: '6px', color: 'var(--color-brand-deep)' }}>
+                      Cantidad a despachar (Picking de unidades / Bulto completo):
+                    </label>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="number"
+                        min="1"
+                        max={currentPallet.cantidad_actual || 1}
+                        value={dispatchUnits}
+                        onChange={(e) => setDispatchUnits(e.target.value)}
+                        className="form-control"
+                        style={{ width: '140px', fontWeight: 700, padding: '8px 10px' }}
+                        required
+                      />
+                      <span style={{ fontSize: '0.86rem', color: 'var(--color-text-secondary)' }}>
+                        de un total de <strong>{currentPallet.cantidad_actual || 0} unidades</strong> disponibles en esta carga
+                      </span>
+                      {Number(dispatchUnits) < Number(currentPallet.cantidad_actual) && (
+                        <button
+                          type="button"
+                          className="btn-detail"
+                          onClick={() => setDispatchUnits(String(currentPallet.cantidad_actual || 1))}
+                          style={{ fontSize: '11px', padding: '3px 8px' }}
+                        >
+                          Restablecer a total ({currentPallet.cantidad_actual})
+                        </button>
+                      )}
+                    </div>
+
+                    {Number(dispatchUnits) > 0 && Number(dispatchUnits) < Number(currentPallet.cantidad_actual) && (
+                      <div style={{ marginTop: '8px', padding: '8px 12px', background: '#FFF3CD', border: '1px solid #FFEEBA', borderRadius: '4px', fontSize: '0.82rem', color: '#856404', lineHeight: 1.4 }}>
+                        ⚡ <strong>Fraccionamiento / Picking parcial:</strong> Se despacharán <strong>{dispatchUnits} unidades</strong>. La etiqueta <code>[{currentPallet.uid_tag}]</code> permanecerá activa en el almacén como <strong>pucho con {Number(currentPallet.cantidad_actual) - Number(dispatchUnits)} unidades restantes</strong>.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="form-group" style={{ marginBottom: '14px' }}>
                   <label style={{ display: 'block', fontWeight: 600, fontSize: '0.88rem', marginBottom: '6px' }}>

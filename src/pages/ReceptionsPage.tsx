@@ -42,6 +42,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
 
   // 4. Formulario de escaneo de lectura individual
   const [scanUid, setScanUid] = useState('')
+  const [scanNumeroSerie, setScanNumeroSerie] = useState('')
   const [scanType, setScanType] = useState<'COMPLETO' | 'PUCHO'>('COMPLETO')
   const [puchoBoxes, setPuchoBoxes] = useState<number>(1)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -166,6 +167,16 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
   const sessionSummary = useMemo(() => {
     if (!selectedProduct) return { totalTags: 0, paletasCompletas: 0, totalPuchos: 0, totalCajas: 0, totalUnidades: 0 }
 
+    if (selectedProduct.modo_manejo === 'SERIALIZADO') {
+      return {
+        totalTags: scannedItems.length,
+        paletasCompletas: 0,
+        totalPuchos: 0,
+        totalCajas: scannedItems.length,
+        totalUnidades: scannedItems.length
+      }
+    }
+
     let paletas = 0
     let puchos = 0
 
@@ -259,6 +270,39 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
     const check = await receptionService.checkTagAvailability(cleanUid, currentUids, selectedProduct.id_producto)
     if (!check.valid) {
       setScanError(check.reason || 'El tag no es válido.')
+      return
+    }
+
+    if (selectedProduct.modo_manejo === 'SERIALIZADO') {
+      const cleanSerie = scanNumeroSerie.trim()
+      if (!cleanSerie) {
+        setScanError('Debe ingresar el número de serie de fábrica del equipo.')
+        return
+      }
+
+      if (scannedItems.some((i) => i.numero_serie === cleanSerie)) {
+        setScanError(`El número de serie [${cleanSerie}] ya fue escaneado en esta sesión.`)
+        return
+      }
+
+      const item: ReceptionReadingItem = {
+        uid: cleanUid,
+        tipo: 'COMPLETO',
+        cantidad_paquetes: 1,
+        numero_serie: cleanSerie
+      }
+
+      const updatedItems = [item, ...scannedItems]
+      setScannedItems(updatedItems)
+      setScanUid('')
+      setScanNumeroSerie('')
+
+      if (selectedWarehouseId) {
+        const prefix = selectedWarehouse?.prefijo_rfid || undefined
+        const allUids = updatedItems.map((i) => i.uid)
+        const nextUid = await receptionService.suggestNextUid(selectedWarehouseId, prefix, allUids)
+        setScanUid(nextUid)
+      }
       return
     }
 
@@ -962,67 +1006,140 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
               {/* Tira de Métricas en Tiempo Real (Ciega - Sin sesgar al operario) */}
               <div className="indicator-strip">
                 <div className="indicator-card">
-                  <span className="indicator-label">Tags / Bultos leídos</span>
+                  <span className="indicator-label">{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Equipos / Tags leídos' : 'Tags / Bultos leídos'}</span>
                   <span className="indicator-value">{sessionSummary.totalTags}</span>
                   <span className="indicator-context">En la sesión actual</span>
                 </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Paletas completas</span>
-                  <span className="indicator-value">{sessionSummary.paletasCompletas}</span>
-                  <span className="indicator-context">{selectedProduct.cajas_por_paleta} cajas c/u</span>
-                </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Cajas pucho / parciales</span>
-                  <span className="indicator-value">{sessionSummary.totalPuchos}</span>
-                  <span className="indicator-context">Cajas sueltas escaneadas</span>
-                </div>
-                <div className="indicator-card">
-                  <span className="indicator-label">Unidades totales leídas</span>
-                  <span className="indicator-value">{sessionSummary.totalUnidades}</span>
-                  <span className="indicator-context">
-                    {sessionSummary.totalCajas} cajas × {selectedProduct.unidades_por_caja} unid
-                  </span>
-                </div>
+                {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
+                  <>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Unidades recibidas</span>
+                      <span className="indicator-value">{sessionSummary.totalUnidades}</span>
+                      <span className="indicator-context">1 unidad física c/u</span>
+                    </div>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Cantidad pedida</span>
+                      <span className="indicator-value">{selectedOrderDetail?.cantidad_pedida ?? '—'}</span>
+                      <span className="indicator-context">En orden de importación</span>
+                    </div>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Modo de manejo</span>
+                      <span className="indicator-value" style={{ fontSize: '18px', color: 'var(--color-brand)' }}>Serializado</span>
+                      <span className="indicator-context">Trazabilidad por serie</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Paletas completas</span>
+                      <span className="indicator-value">{sessionSummary.paletasCompletas}</span>
+                      <span className="indicator-context">{selectedProduct.cajas_por_paleta} cajas c/u</span>
+                    </div>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Cajas pucho / parciales</span>
+                      <span className="indicator-value">{sessionSummary.totalPuchos}</span>
+                      <span className="indicator-context">Cajas sueltas escaneadas</span>
+                    </div>
+                    <div className="indicator-card">
+                      <span className="indicator-label">Unidades totales leídas</span>
+                      <span className="indicator-value">{sessionSummary.totalUnidades}</span>
+                      <span className="indicator-context">
+                        {sessionSummary.totalCajas} cajas × {selectedProduct.unidades_por_caja} unid
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Consola de Entrada Táctica de Tags */}
               <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 <h3 className="section-title" style={{ margin: 0, fontSize: '16px', color: 'var(--color-brand-deep)' }}>
-                  Consola de escaneo táctico (RFID / NFC / Código de Barras)
+                  {selectedProduct.modo_manejo === 'SERIALIZADO'
+                    ? 'Consola de recepción individual de maquinaria / equipos serializados'
+                    : 'Consola de escaneo táctico (RFID / NFC / Código de Barras)'}
                 </h3>
                 <p className="muted" style={{ margin: 0, fontSize: '13px' }}>
-                  Escanee con lector láser, sensor NFC o ingrese el tag y presione Enter. El sistema busca de menor a mayor los huecos libres disponibles con el prefijo oficial.
+                  {selectedProduct.modo_manejo === 'SERIALIZADO'
+                    ? 'Ingrese o escanee el número de serie de fábrica y asócielo a su transponder RFID. El sistema valida la unicidad física y sugerirá el siguiente código de tag disponible.'
+                    : 'Escanee con lector láser, sensor NFC o ingrese el tag y presione Enter. El sistema busca de menor a mayor los huecos libres disponibles con el prefijo oficial.'}
                 </p>
 
                 <form onSubmit={handleAddReading} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Selector de Modo: Paleta Completa vs Pucho */}
-                  <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
-                      <input
-                        type="radio"
-                        name="scanType"
-                        value="COMPLETO"
-                        checked={scanType === 'COMPLETO'}
-                        onChange={() => setScanType('COMPLETO')}
-                      />
-                      <span>Paleta completa estándar ({selectedProduct.cajas_por_paleta} cajas)</span>
-                    </label>
+                  {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
+                    <div
+                      style={{
+                        padding: '10px 14px',
+                        background: 'var(--color-brand-soft)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        color: 'var(--color-brand-deep)'
+                      }}
+                    >
+                      <strong>Recepción de Maquinaria y Equipos:</strong> Cada equipo se registra de forma unitaria asociando su número de serie grabado de fábrica con su Tag RFID correspondiente.
+                    </div>
+                  ) : (
+                    /* Selector de Modo: Paleta Completa vs Pucho */
+                    <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
+                        <input
+                          type="radio"
+                          name="scanType"
+                          value="COMPLETO"
+                          checked={scanType === 'COMPLETO'}
+                          onChange={() => setScanType('COMPLETO')}
+                        />
+                        <span>Paleta completa estándar ({selectedProduct.cajas_por_paleta} cajas)</span>
+                      </label>
 
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
-                      <input
-                        type="radio"
-                        name="scanType"
-                        value="PUCHO"
-                        checked={scanType === 'PUCHO'}
-                        onChange={() => setScanType('PUCHO')}
-                      />
-                      <span>Carga pucho (Bultos parciales)</span>
-                    </label>
-                  </div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 500 }}>
+                        <input
+                          type="radio"
+                          name="scanType"
+                          value="PUCHO"
+                          checked={scanType === 'PUCHO'}
+                          onChange={() => setScanType('PUCHO')}
+                        />
+                        <span>Carga pucho (Bultos parciales)</span>
+                      </label>
+                    </div>
+                  )}
 
                   {/* Campos de captura */}
                   <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-                    <div style={{ flex: '1 1 280px' }}>
+                    {selectedProduct.modo_manejo === 'SERIALIZADO' && (
+                      <div style={{ flex: '1 1 240px' }}>
+                        <label
+                          htmlFor="serial-input"
+                          style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
+                        >
+                          Número de Serie de Fábrica *
+                        </label>
+                        <input
+                          id="serial-input"
+                          type="text"
+                          placeholder="Ej: SN-CAT-2026-001"
+                          value={scanNumeroSerie}
+                          onChange={(e) => {
+                            setScanNumeroSerie(e.target.value)
+                            setScanError(null)
+                          }}
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: '6px',
+                            background: 'var(--color-surface)',
+                            color: 'var(--color-brand-deep)',
+                            fontFamily: 'var(--font-body)',
+                            fontSize: '15px',
+                            fontWeight: 600
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    <div style={{ flex: '1 1 240px' }}>
                       <label
                         htmlFor="tag-input"
                         style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: '6px' }}
@@ -1038,7 +1155,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                           setScanUid(e.target.value)
                           setScanError(null)
                         }}
-                        autoFocus
+                        autoFocus={selectedProduct.modo_manejo !== 'SERIALIZADO'}
                         style={{
                           width: '100%',
                           padding: '10px 14px',
@@ -1053,7 +1170,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                       />
                     </div>
 
-                    {scanType === 'PUCHO' && (
+                    {selectedProduct.modo_manejo !== 'SERIALIZADO' && scanType === 'PUCHO' && (
                       <div style={{ width: '150px' }}>
                         <label
                           htmlFor="pucho-boxes"
@@ -1087,7 +1204,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                         Sugerir correlativo
                       </button>
                       <button type="submit" className="button primary">
-                        Registrar lectura
+                        {selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Registrar equipo' : 'Registrar lectura'}
                       </button>
                     </div>
                   </div>
@@ -1131,8 +1248,8 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                         <tr>
                           <th style={{ width: '60px' }}>N°</th>
                           <th>UID Tag RFID</th>
-                          <th>Tipo de carga</th>
-                          <th>Cajas</th>
+                          <th>{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Número de Serie' : 'Tipo de carga'}</th>
+                          <th>{selectedProduct.modo_manejo === 'SERIALIZADO' ? 'Detalle' : 'Cajas'}</th>
                           <th>Unidades</th>
                           <th style={{ width: '100px', textAlign: 'center' }}>Acción</th>
                         </tr>
@@ -1140,7 +1257,9 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                       <tbody>
                         {scannedItems.map((item, idx) => {
                           const nro = scannedItems.length - idx
-                          const unidades = item.cantidad_paquetes * selectedProduct.unidades_por_caja
+                          const unidades = selectedProduct.modo_manejo === 'SERIALIZADO'
+                            ? 1
+                            : item.cantidad_paquetes * selectedProduct.unidades_por_caja
                           return (
                             <tr key={item.uid}>
                               <td style={{ fontWeight: 600 }}>#{nro}</td>
@@ -1148,7 +1267,11 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                                 <strong style={{ color: 'var(--color-brand-deep)' }}>{item.uid}</strong>
                               </td>
                               <td>
-                                {item.tipo === 'COMPLETO' ? (
+                                {selectedProduct.modo_manejo === 'SERIALIZADO' ? (
+                                  <span style={{ fontWeight: 600, color: 'var(--color-brand)' }}>
+                                    {item.numero_serie || '—'}
+                                  </span>
+                                ) : item.tipo === 'COMPLETO' ? (
                                   <span
                                     style={{
                                       background: 'var(--color-brand-soft)',
@@ -1176,7 +1299,7 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                                   </span>
                                 )}
                               </td>
-                              <td>{item.cantidad_paquetes} cajas</td>
+                              <td>{selectedProduct.modo_manejo === 'SERIALIZADO' ? '1 equipo único' : `${item.cantidad_paquetes} cajas`}</td>
                               <td>{unidades} unid</td>
                               <td style={{ textAlign: 'center' }}>
                                 <button
