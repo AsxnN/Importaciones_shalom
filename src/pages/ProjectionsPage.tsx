@@ -4,12 +4,17 @@ import {
   projectionFormulaEngine,
   type FormulaEvaluationContext
 } from '../services/projectionFormulaEngine'
+import { receptionService } from '../services/receptionService'
+import { OrdersListSubView } from './projections/OrdersListSubView'
+import { NewOrderModal } from './projections/NewOrderModal'
+import { ExcelImportModal } from './projections/ExcelImportModal'
 import type {
   CalculableColumnKey,
   ColumnDisplayFormat,
   ColumnEquationConfig,
   CustomProjectionColumn,
   ProjectionItem,
+  ProjectionOrder,
   ProjectionTemplate,
   TemplateParamsForm
 } from '../types/projections'
@@ -37,6 +42,15 @@ interface ProjectionsPageProps {
 }
 
 export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPageProps) {
+  // 0. Modo de Vista: Listado de Órdenes Guardadas vs Matriz de Cálculo de la Orden
+  const [viewMode, setViewMode] = useState<'list' | 'matrix'>('list')
+  const [orders, setOrders] = useState<ProjectionOrder[]>([])
+  const [selectedOrder, setSelectedOrder] = useState<ProjectionOrder | null>(null)
+  const [newOrderModalOpen, setNewOrderModalOpen] = useState(false)
+  const [excelModalOpen, setExcelModalOpen] = useState(false)
+  const [suppliers, setSuppliers] = useState<Array<{ id_proveedor: number; razon_social: string }>>([])
+  const [isEmittingOrder, setIsEmittingOrder] = useState(false)
+
   // 1. Estado principal
   const [templates, setTemplates] = useState<ProjectionTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState<number>(1)
@@ -133,12 +147,21 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     setLoading(true)
     setErrorMsg(null)
     try {
-      const [tplList, stockMap] = await Promise.all([
+      const [tplList, stockMap, ordList, supList] = await Promise.all([
         projectionService.getTemplates(),
-        projectionService.getLiveStockMap()
+        projectionService.getLiveStockMap(),
+        projectionService.getOrders(),
+        receptionService.getSuppliers()
       ])
       setTemplates(tplList)
       setLiveStockMap(stockMap)
+      setOrders(ordList)
+      setSuppliers(
+        supList.map((s) => ({
+          id_proveedor: s.id_proveedor,
+          razon_social: s.razon_social || s.nombre || 'Proveedor'
+        }))
+      )
 
       const activeTpl = tplList.find((t) => t.id_plantilla === selectedTemplateId) || tplList[0]
       if (activeTpl) {
@@ -169,6 +192,240 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   useEffect(() => {
     void loadInitialData()
   }, [])
+
+  // 1b. GESTIÓN Y SELECCIÓN DE ÓRDENES GUARDADAS
+  const handleSelectOrder = async (order: ProjectionOrder) => {
+    setSelectedOrder(order)
+    const tplId = order.id_plantilla || 1
+    setSelectedTemplateId(tplId)
+    setSelectedItemIds(new Set())
+    setErrorMsg(null)
+    setSuccessMsg(null)
+
+    const activeTpl = templates.find((t) => t.id_plantilla === tplId) || templates[0]
+    if (activeTpl) {
+      setFormLeadTime(Number(activeTpl.lead_time_meses))
+      setFormSeguridadPct(Number(activeTpl.seguridad_pct) * 100)
+      setFormFactorCompra(Number(activeTpl.factor_compra))
+      setFormDiasMes(Number(activeTpl.dias_por_mes) || 30)
+
+      // Si la orden tiene un snapshot guardado de meses/ítems, restaurarlo
+      if (order.snapshot_proyeccion?.columnas_meses !== undefined) {
+        const orderMonths = order.snapshot_proyeccion.columnas_meses || []
+        setTemplates((prev) =>
+          prev.map((t) =>
+            t.id_plantilla === tplId ? { ...t, columnas_meses: orderMonths } : t
+          )
+        )
+        setStartMonth(order.snapshot_proyeccion.startMonth || (orderMonths.length > 0 ? orderMonths[0] : ''))
+        setEndMonth(order.snapshot_proyeccion.endMonth || (orderMonths.length > 0 ? orderMonths[orderMonths.length - 1] : ''))
+        setIgnoreZeroMonths(order.snapshot_proyeccion.ignoreZeroMonths !== false)
+      } else if (order.snapshot_proyeccion?.startMonth && order.snapshot_proyeccion?.endMonth) {
+        setStartMonth(order.snapshot_proyeccion.startMonth)
+        setEndMonth(order.snapshot_proyeccion.endMonth)
+        setIgnoreZeroMonths(order.snapshot_proyeccion.ignoreZeroMonths !== false)
+      } else {
+        const months = activeTpl.columnas_meses || []
+        const initStart = activeTpl.mes_inicio_promedio || (months.length > 0 ? months[0] : '')
+        const initEnd = activeTpl.mes_fin_promedio || (months.length > 0 ? months[months.length - 1] : '')
+        setStartMonth(initStart)
+        setEndMonth(initEnd)
+        setIgnoreZeroMonths(activeTpl.ignorar_meses_cero !== false)
+      }
+
+      if (order.snapshot_proyeccion?.items && order.snapshot_proyeccion.items.length > 0) {
+        setItems(order.snapshot_proyeccion.items)
+      } else {
+        const rawItems = await projectionService.getItems(activeTpl.id_plantilla, activeTpl.codigo)
+        setItems(rawItems)
+      }
+    }
+
+    setViewMode('matrix')
+  }
+
+  const handleCreateOrder = async (data: {
+    numero_orden: string
+    descripcion: string
+    id_plantilla: number
+    id_proveedor: number | null
+    tipo_contenedor: '20FT' | '40FT' | 'LCL'
+  }) => {
+    // Al crear una orden nueva, no debe traer meses viejos ni inventados
+    const activeTpl = templates.find((t) => t.id_plantilla === data.id_plantilla) || templates[0]
+    const templateItems = await projectionService.getItems(activeTpl.id_plantilla, activeTpl.codigo)
+    const cleanItems = templateItems.map((it) => ({
+      ...it,
+      datos_meses: {} as Record<string, number>,
+      promedio_manual: null,
+      stock_manual: liveStockMap.get(it.nombre_producto) || 0,
+      stock_redondeado_manual: null
+    }))
+
+    const res = await projectionService.createOrder({
+      numero_orden: data.numero_orden,
+      descripcion: data.descripcion,
+      id_plantilla: data.id_plantilla,
+      id_proveedor: data.id_proveedor,
+      tipo_contenedor: data.tipo_contenedor,
+      estado: 'BORRADOR',
+      snapshot_proyeccion: {
+        templateId: data.id_plantilla,
+        templateCodigo: activeTpl.codigo,
+        startMonth: '',
+        endMonth: '',
+        columnas_meses: [],
+        ignoreZeroMonths: true,
+        items: cleanItems
+      }
+    })
+
+    if (!res.success || !res.order) {
+      throw new Error(res.error || 'No se pudo crear la orden.')
+    }
+
+    const updatedOrders = await projectionService.getOrders()
+    setOrders(updatedOrders)
+    await handleSelectOrder(res.order)
+    setSuccessMsg(
+      `Orden ${res.order.numero_orden} creada en blanco. Carga el Excel de salidas para extraer los consumos reales y generar los meses dinámicamente.`
+    )
+  }
+
+  const handleDeleteOrder = async (id_orden: number) => {
+    await projectionService.deleteOrder(id_orden)
+    const updatedOrders = await projectionService.getOrders()
+    setOrders(updatedOrders)
+    if (selectedOrder?.id_orden === id_orden) {
+      setSelectedOrder(null)
+      setViewMode('list')
+    }
+    setSuccessMsg('Orden eliminada correctamente del historial.')
+  }
+
+  const handleEmitActiveOrder = async () => {
+    if (!selectedOrder) return
+
+    const rowsWithPurchase = calculatedRows.filter((r) => r.compra_sugerida > 0)
+    if (rowsWithPurchase.length === 0) {
+      setErrorMsg('No hay productos con compra sugerida mayor a cero para emitir en esta orden.')
+      return
+    }
+
+    setIsEmittingOrder(true)
+    setErrorMsg(null)
+    try {
+      const res = await projectionService.createImportOrderFromProjection(
+        selectedOrder.numero_orden,
+        selectedOrder.tipo_contenedor || '40FT',
+        rowsWithPurchase
+      )
+
+      if (!res.success) {
+        throw new Error(res.error || 'Error al emitir la orden.')
+      }
+
+      const sumUnits = rowsWithPurchase.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      await projectionService.updateOrder(selectedOrder.id_orden, {
+        estado: 'TRANSITO',
+        total_items: rowsWithPurchase.length,
+        total_unidades: sumUnits,
+        snapshot_proyeccion: {
+          templateId: activeTemplate?.id_plantilla,
+          templateCodigo: activeTemplate?.codigo,
+          startMonth,
+          endMonth,
+          ignoreZeroMonths,
+          items,
+          customColumns: activeTemplate?.columnas_personalizadas
+        }
+      })
+
+      const updatedOrders = await projectionService.getOrders()
+      setOrders(updatedOrders)
+      const freshOrder = updatedOrders.find((o) => o.id_orden === selectedOrder.id_orden) || {
+        ...selectedOrder,
+        estado: 'TRANSITO',
+        total_items: rowsWithPurchase.length,
+        total_unidades: sumUnits
+      }
+      setSelectedOrder(freshOrder)
+      setSuccessMsg(
+        `¡Orden ${selectedOrder.numero_orden} emitida con éxito a Tránsito Marítimo con ${rowsWithPurchase.length} productos (${sumUnits.toLocaleString('es-PE')} unid)! Ya está disponible en el Módulo 04 (Recepciones) para su control en muelle.`
+      )
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error al emitir la orden a tránsito.')
+    } finally {
+      setIsEmittingOrder(false)
+    }
+  }
+
+  const handleSaveOrderSnapshot = async () => {
+    if (!selectedOrder) return
+    try {
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      await projectionService.updateOrder(selectedOrder.id_orden, {
+        total_items: items.length,
+        total_unidades: sumUnits,
+        snapshot_proyeccion: {
+          templateId: activeTemplate?.id_plantilla,
+          templateCodigo: activeTemplate?.codigo,
+          startMonth,
+          endMonth,
+          ignoreZeroMonths,
+          items,
+          customColumns: activeTemplate?.columnas_personalizadas
+        }
+      })
+      const updatedOrders = await projectionService.getOrders()
+      setOrders(updatedOrders)
+      setSuccessMsg(`Cálculos y proyecciones guardados para la orden ${selectedOrder.numero_orden}.`)
+    } catch (err: any) {
+      setErrorMsg(`Error al guardar cambios de la orden: ${err.message}`)
+    }
+  }
+
+  const handleApplyExcelOutputs = async (updatedItems: ProjectionItem[], detectedMonths: string[]) => {
+    setItems(updatedItems)
+
+    if (activeTemplate && detectedMonths.length > 0) {
+      setTemplates((prev) =>
+        prev.map((t) =>
+          t.id_plantilla === activeTemplate.id_plantilla
+            ? { ...t, columnas_meses: detectedMonths }
+            : t
+        )
+      )
+      setStartMonth(detectedMonths[0])
+      setEndMonth(detectedMonths[detectedMonths.length - 1])
+    }
+
+    for (const item of updatedItems) {
+      void projectionService.updateItemCell(item.id_item, { datos_meses: item.datos_meses })
+    }
+
+    if (selectedOrder) {
+      const sumUnits = calculatedRows.reduce((acc, r) => acc + r.compra_sugerida, 0)
+      void projectionService.updateOrder(selectedOrder.id_orden, {
+        total_items: updatedItems.length,
+        total_unidades: sumUnits,
+        snapshot_proyeccion: {
+          templateId: activeTemplate?.id_plantilla,
+          templateCodigo: activeTemplate?.codigo,
+          startMonth: detectedMonths[0],
+          endMonth: detectedMonths[detectedMonths.length - 1],
+          columnas_meses: detectedMonths,
+          ignoreZeroMonths,
+          items: updatedItems,
+          customColumns: activeTemplate?.columnas_personalizadas
+        }
+      })
+    }
+
+    setSuccessMsg(
+      `Consumos y salidas hacia agencias importados con éxito desde Excel. Se configuraron los meses ${detectedMonths.join(', ')} y el promedio se recalculó reactivamente.`
+    )
+  }
 
   // Cambiar de plantilla (pestaña)
   const handleSelectTemplate = async (templateId: number) => {
@@ -798,6 +1055,8 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
       )
       setOrderModalOpen(false)
       setSelectedItemIds(new Set())
+      const updatedOrders = await projectionService.getOrders()
+      setOrders(updatedOrders)
     } catch (err: any) {
       setErrorMsg(`Error inesperado: ${err.message}`)
     } finally {
@@ -879,43 +1138,172 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     return chips
   }, [activeTemplate])
 
+  // ==============================================================================
+  // VISTA 1: LISTADO DE ÓRDENES GUARDADAS (Historial periódico)
+  // ==============================================================================
+  if (viewMode === 'list') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+        {errorMsg && (
+          <div
+            className="notice"
+            role="alert"
+            style={{
+              borderColor: 'var(--color-danger)',
+              backgroundColor: '#FDF3F2',
+              color: 'var(--color-danger)'
+            }}
+          >
+            {errorMsg}
+          </div>
+        )}
+        {successMsg && (
+          <div
+            className="notice"
+            role="alert"
+            style={{
+              borderColor: 'var(--color-success)',
+              backgroundColor: '#F1F8F4',
+              color: 'var(--color-success)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <span>{successMsg}</span>
+            <button
+              type="button"
+              onClick={() => setSuccessMsg(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        <OrdersListSubView
+          orders={orders}
+          onSelectOrder={handleSelectOrder}
+          onCreateOrderClick={() => setNewOrderModalOpen(true)}
+          onDeleteOrder={handleDeleteOrder}
+          onOpenReceptions={onOpenReceptions}
+          onBack={onBack}
+          loading={loading}
+        />
+
+        <NewOrderModal
+          isOpen={newOrderModalOpen}
+          onClose={() => setNewOrderModalOpen(false)}
+          onSubmit={handleCreateOrder}
+          templates={templates}
+          existingOrderNumbers={orders.map((o) => o.numero_orden)}
+          suppliers={suppliers}
+        />
+      </div>
+    )
+  }
+
+  // ==============================================================================
+  // VISTA 2: MATRIZ DINÁMICA TIPO EXCEL DE LA ORDEN SELECCIONADA
+  // ==============================================================================
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-      {/* 1. Encabezado de página */}
+      {/* 1. Barra de Navegación y Contexto de la Orden Activa */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'flex-start',
+          alignItems: 'center',
           flexWrap: 'wrap',
-          gap: '16px'
+          gap: '14px',
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: '8px',
+          padding: '14px 18px'
         }}
       >
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button
-              type="button"
-              className="button secondary button-sm"
-              onClick={onBack}
-              title="Volver al centro de operaciones"
-            >
-              Volver
-            </button>
-            <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>
-              Módulo 06 · Planificación comercial e importaciones
-            </span>
-          </div>
-          <h1 className="page-title" style={{ marginTop: '6px' }}>
-            Órdenes y proyecciones de importación
-          </h1>
-          <p className="page-lead" style={{ marginTop: '2px' }}>
-            Matriz dinámica tipo Excel con cálculo reactivo de fórmulas por columna, selección de
-            rango de meses y órdenes sugeridas.
-          </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="button secondary button-sm"
+            onClick={() => setViewMode('list')}
+            title="Volver a la lista de órdenes y proyecciones"
+            style={{ fontWeight: 600 }}
+          >
+            ← Volver a la lista de órdenes
+          </button>
+
+          {selectedOrder && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  fontSize: '16px',
+                  fontWeight: 700,
+                  color: 'var(--color-brand-deep)',
+                  fontFamily: 'monospace'
+                }}
+              >
+                {selectedOrder.numero_orden}
+              </span>
+              <span style={{ fontSize: '14px', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
+                · {selectedOrder.descripcion || 'Planificación de abastecimiento'}
+              </span>
+              <span
+                style={{
+                  background: 'var(--color-canvas)',
+                  border: '1px solid var(--color-border)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  fontWeight: 600
+                }}
+              >
+                {selectedOrder.tipo_contenedor || '40FT'}
+              </span>
+              <span
+                style={{
+                  background:
+                    selectedOrder.estado === 'RECIBIDA'
+                      ? '#EEF8F1'
+                      : selectedOrder.estado === 'TRANSITO'
+                      ? '#FFF8EE'
+                      : 'var(--color-brand-soft)',
+                  color:
+                    selectedOrder.estado === 'RECIBIDA'
+                      ? 'var(--color-success)'
+                      : selectedOrder.estado === 'TRANSITO'
+                      ? 'var(--color-warning)'
+                      : 'var(--color-brand)',
+                  border: '1px solid var(--color-border)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  fontWeight: 600
+                }}
+              >
+                {selectedOrder.estado === 'RECIBIDA'
+                  ? 'Recibida en almacén'
+                  : selectedOrder.estado === 'TRANSITO'
+                  ? 'En tránsito marítimo'
+                  : 'Borrador (en cálculo)'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Acciones Rápidas Superiores */}
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Botón Principal para Importar Excel de Salidas */}
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setExcelModalOpen(true)}
+            title="Cargar archivo Excel con salidas y consumos mensuales hacia agencias"
+            style={{ fontWeight: 600, borderColor: 'var(--color-brand)', color: 'var(--color-brand)' }}
+          >
+            📥 Cargar salidas desde Excel
+          </button>
+
           <button
             type="button"
             className="button secondary"
@@ -931,7 +1319,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
             onClick={() => setParamsModalOpen(true)}
             title="Configurar los parámetros globales de lead time y seguridad"
           >
-            Parámetros globales
+            Parámetros
           </button>
           <button
             type="button"
@@ -943,12 +1331,46 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           </button>
           <button
             type="button"
-            className="button primary"
-            onClick={handleOpenOrderModal}
-            title="Crear orden oficial de importación con los productos y cantidades sugeridas"
+            className="button secondary"
+            onClick={handleSaveOrderSnapshot}
+            title="Guardar estado de cálculo de esta orden"
           >
-            Generar orden de importación {selectedItemIds.size > 0 ? `(${selectedItemIds.size})` : ''}
+            Guardar cambios
           </button>
+
+          {selectedItemIds.size > 0 && (
+            <button
+              type="button"
+              className="button primary button-sm"
+              onClick={handleOpenOrderModal}
+              title="Generar orden de importación con los productos seleccionados"
+            >
+              Generar orden ({selectedItemIds.size})
+            </button>
+          )}
+
+          {selectedOrder?.estado === 'BORRADOR' && (
+            <button
+              type="button"
+              className="button primary"
+              onClick={handleEmitActiveOrder}
+              disabled={isEmittingOrder}
+              title="Confirmar los cálculos y emitir la orden a Tránsito para recepción en Módulo 04"
+            >
+              {isEmittingOrder ? 'Emitiendo a tránsito...' : 'Confirmar y emitir a tránsito'}
+            </button>
+          )}
+
+          {selectedOrder?.estado !== 'BORRADOR' && onOpenReceptions && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onOpenReceptions}
+              title="Ver estado de recepción en muelle (Módulo 04)"
+            >
+              Ver en recepciones
+            </button>
+          )}
         </div>
       </div>
 
@@ -990,6 +1412,37 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
               Ir a Recepciones RFID
             </button>
           )}
+        </div>
+      )}
+
+      {/* Aviso si la orden aún no tiene consumos mensuales cargados */}
+      {(!activeTemplate?.columnas_meses || activeTemplate.columnas_meses.length === 0) && (
+        <div
+          style={{
+            background: 'var(--color-surface)',
+            border: '2px dashed var(--color-brand)',
+            borderRadius: '8px',
+            padding: '24px',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '10px'
+          }}
+        >
+          <strong style={{ fontSize: '16px', color: 'var(--color-brand-deep)' }}>
+            Esta orden no tiene consumos mensuales cargados
+          </strong>
+          <p style={{ margin: 0, fontSize: '13px', color: 'var(--color-text-secondary)', maxWidth: '580px' }}>
+            Las órdenes nuevas inician sin datos de meses previos. Carga el archivo Excel con las salidas hacia las agencias (con columnas de Fecha, Producto y Cantidad) para generar automáticamente las columnas de meses y calcular la proyección.
+          </p>
+          <button
+            type="button"
+            className="button primary"
+            onClick={() => setExcelModalOpen(true)}
+          >
+            📥 Cargar salidas desde Excel
+          </button>
         </div>
       )}
 
@@ -3845,6 +4298,15 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           </div>
         </div>
       )}
+
+      {/* Modal de Importación de Consumos Mensuales desde Excel */}
+      <ExcelImportModal
+        isOpen={excelModalOpen}
+        onClose={() => setExcelModalOpen(false)}
+        template={activeTemplate}
+        items={items}
+        onApply={handleApplyExcelOutputs}
+      />
     </div>
   )
 }

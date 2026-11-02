@@ -1,12 +1,83 @@
+import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import type {
   CalculableColumnKey,
   CalculatedProjectionRow,
   CustomProjectionColumn,
+  ExcelImportResult,
   ProjectionItem,
+  ProjectionOrder,
+  ProjectionOrderStatus,
   ProjectionTemplate,
   TemplateParamsForm
 } from '../types/projections'
+
+export const LOCAL_STORAGE_ORDERS_KEY = 'shalom_projection_orders_v1'
+
+const DEFAULT_ORDERS: ProjectionOrder[] = [
+  {
+    id_orden: 1,
+    numero_orden: 'IMP-2026-001',
+    descripcion: 'Campaña Suministros Agencias · 1er Semestre',
+    id_plantilla: 1,
+    id_proveedor: 1,
+    estado: 'RECIBIDA',
+    fecha_emision: '2026-08-15',
+    tipo_contenedor: '40FT',
+    volumen_ocupado_m3: 58.5,
+    total_items: 20,
+    total_unidades: 245000,
+    proveedor: {
+      id_proveedor: 1,
+      razon_social: 'Wenzhou Packaging Co. Ltd',
+      nombre: 'Wenzhou Packaging Co. Ltd'
+    },
+    detalles: [
+      { id_producto: 1, cantidad_pedida: 120000, producto: { sku: 'SKU-00001', nombre: 'BOLSA SEG. GRANDE' } },
+      { id_producto: 2, cantidad_pedida: 80000, producto: { sku: 'SKU-00002', nombre: 'BOLSA SEG. MEDIANA' } },
+      { id_producto: 3, cantidad_pedida: 45000, producto: { sku: 'SKU-00003', nombre: 'BOLSA SEG. PEQUEÑO' } }
+    ]
+  },
+  {
+    id_orden: 2,
+    numero_orden: 'IMP-2026-002',
+    descripcion: 'Reposición Rollos Térmicos y Contómetros',
+    id_plantilla: 1,
+    id_proveedor: 1,
+    estado: 'TRANSITO',
+    fecha_emision: '2026-10-10',
+    tipo_contenedor: '40FT',
+    volumen_ocupado_m3: 62.0,
+    total_items: 6,
+    total_unidades: 180000,
+    proveedor: {
+      id_proveedor: 1,
+      razon_social: 'Shenzhen Thermal Paper Tech',
+      nombre: 'Shenzhen Thermal Paper Tech'
+    },
+    detalles: [
+      { id_producto: 8, cantidad_pedida: 180000, producto: { sku: 'SKU-00008', nombre: 'CONTOMETRO' } }
+    ]
+  },
+  {
+    id_orden: 3,
+    numero_orden: 'IMP-2026-003',
+    descripcion: 'Proyección Campaña Verano 2027 (En Simulación)',
+    id_plantilla: 1,
+    id_proveedor: 1,
+    estado: 'BORRADOR',
+    fecha_emision: '2026-11-01',
+    tipo_contenedor: '40FT',
+    volumen_ocupado_m3: 45.0,
+    total_items: 20,
+    total_unidades: 310000,
+    proveedor: {
+      id_proveedor: 1,
+      razon_social: 'Wenzhou Packaging Co. Ltd',
+      nombre: 'Wenzhou Packaging Co. Ltd'
+    }
+  }
+]
 
 // Plantillas predeterminadas de respaldo (idénticas a REPORTE ULTIMO TRIMESTRE.xlsx)
 const DEFAULT_TEMPLATES: ProjectionTemplate[] = [
@@ -797,6 +868,550 @@ export const projectionService = {
       return { success: true, id_orden: orden.id_orden }
     } catch (err: any) {
       return { success: false, error: err.message || 'Error inesperado al generar la orden.' }
+    }
+  },
+
+  // 10. GESTIÓN INTEGRAL DE ÓRDENES Y PROYECCIONES PERIÓDICAS
+  async getOrders(): Promise<ProjectionOrder[]> {
+    try {
+      const { data, error } = await supabase
+        .from('orden_importacion')
+        .select(`
+          id_orden,
+          numero_orden,
+          descripcion,
+          id_plantilla,
+          id_proveedor,
+          estado,
+          fecha_emision,
+          tipo_contenedor,
+          volumen_ocupado_m3,
+          total_items,
+          total_unidades,
+          snapshot_proyeccion,
+          proveedor ( id_proveedor, razon_social ),
+          detalle_orden (
+            id_detalle,
+            id_orden,
+            id_producto,
+            cantidad_pedida,
+            subtotal_peso_kg,
+            subtotal_volumen_m3,
+            producto ( id_producto, sku, nombre )
+          )
+        `)
+        .order('fecha_emision', { ascending: false })
+        .order('id_orden', { ascending: false })
+
+      if (!error && data && data.length > 0) {
+        const formatted: ProjectionOrder[] = data.map((ord: any) => {
+          const detalles = ord.detalle_orden || []
+          const calcItems = ord.total_items || detalles.length
+          const calcUnits =
+            ord.total_unidades ||
+            detalles.reduce((acc: number, d: any) => acc + (Number(d.cantidad_pedida) || 0), 0)
+
+          return {
+            id_orden: ord.id_orden,
+            numero_orden: ord.numero_orden,
+            descripcion: ord.descripcion || `Orden de importación ${ord.numero_orden}`,
+            id_plantilla: ord.id_plantilla || 1,
+            id_proveedor: ord.id_proveedor,
+            estado: (ord.estado as ProjectionOrderStatus) || 'BORRADOR',
+            fecha_emision: ord.fecha_emision || new Date().toISOString().split('T')[0],
+            tipo_contenedor: ord.tipo_contenedor || '40FT',
+            volumen_ocupado_m3: ord.volumen_ocupado_m3 || null,
+            total_items: calcItems,
+            total_unidades: calcUnits,
+            proveedor: ord.proveedor
+              ? {
+                  id_proveedor: ord.proveedor.id_proveedor,
+                  razon_social: ord.proveedor.razon_social,
+                  nombre: ord.proveedor.razon_social
+                }
+              : null,
+            detalles: detalles.map((d: any) => ({
+              id_detalle: d.id_detalle,
+              id_orden: d.id_orden,
+              id_producto: d.id_producto,
+              cantidad_pedida: d.cantidad_pedida,
+              subtotal_peso_kg: d.subtotal_peso_kg,
+              subtotal_volumen_m3: d.subtotal_volumen_m3,
+              producto: d.producto
+                ? {
+                    id_producto: d.producto.id_producto,
+                    sku: d.producto.sku,
+                    nombre: d.producto.nombre
+                  }
+                : undefined
+            })),
+            snapshot_proyeccion: ord.snapshot_proyeccion || null
+          }
+        })
+        localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(formatted))
+        return formatted
+      }
+    } catch (err) {
+      console.warn('Error fetching orders from Supabase, relying on localStorage fallback:', err)
+    }
+
+    // Fallback con localStorage o semillas por defecto
+    const cached = localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY)
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed
+        }
+      } catch {
+        // fallback a semillas
+      }
+    }
+
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(DEFAULT_ORDERS))
+    return DEFAULT_ORDERS
+  },
+
+  async createOrder(payload: {
+    numero_orden: string
+    descripcion?: string
+    id_plantilla?: number
+    id_proveedor?: number | null
+    tipo_contenedor?: '20FT' | '40FT' | 'LCL'
+    estado?: ProjectionOrderStatus
+    fecha_emision?: string
+    snapshot_proyeccion?: any
+    items?: Array<{ id_producto?: number; nombre_producto: string; cantidad_pedida: number }>
+  }): Promise<{ success: boolean; id_orden?: number; order?: ProjectionOrder; error?: string }> {
+    const cleanNum = payload.numero_orden.trim().toUpperCase()
+    if (!cleanNum) {
+      return { success: false, error: 'El número de orden es obligatorio.' }
+    }
+    const cleanDesc = payload.descripcion?.trim() || `Planificación ${cleanNum}`
+    const plantillaId = payload.id_plantilla || 1
+    const container = payload.tipo_contenedor || '40FT'
+    const status = payload.estado || 'BORRADOR'
+    const emision = payload.fecha_emision || new Date().toISOString().split('T')[0]
+
+    let newId = Date.now()
+
+    try {
+      const { data, error } = await supabase
+        .from('orden_importacion')
+        .insert({
+          numero_orden: cleanNum,
+          descripcion: cleanDesc,
+          id_plantilla: plantillaId,
+          id_proveedor: payload.id_proveedor || null,
+          tipo_contenedor: container,
+          estado: status,
+          fecha_emision: emision,
+          snapshot_proyeccion: payload.snapshot_proyeccion || {}
+        })
+        .select('id_orden')
+        .single()
+
+      if (!error && data?.id_orden) {
+        newId = data.id_orden
+      }
+    } catch (err) {
+      console.warn('Supabase insert failed, continuing with fallback:', err)
+    }
+
+    const newOrder: ProjectionOrder = {
+      id_orden: newId,
+      numero_orden: cleanNum,
+      descripcion: cleanDesc,
+      id_plantilla: plantillaId,
+      id_proveedor: payload.id_proveedor || null,
+      estado: status,
+      fecha_emision: emision,
+      tipo_contenedor: container,
+      total_items: payload.items?.length || 0,
+      total_unidades: payload.items?.reduce((s, i) => s + (Number(i.cantidad_pedida) || 0), 0) || 0,
+      snapshot_proyeccion: payload.snapshot_proyeccion || null,
+      detalles:
+        payload.items?.map((it, idx) => ({
+          id_detalle: idx + 1,
+          id_orden: newId,
+          id_producto: it.id_producto || idx + 1,
+          cantidad_pedida: it.cantidad_pedida,
+          producto: { sku: `SKU-${idx + 1}`, nombre: it.nombre_producto }
+        })) || []
+    }
+
+    const currentOrders = await this.getOrders()
+    const updatedOrders = [newOrder, ...currentOrders.filter((o) => o.numero_orden !== cleanNum)]
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+
+    return { success: true, id_orden: newId, order: newOrder }
+  },
+
+  async updateOrder(
+    id_orden: number,
+    updates: Partial<ProjectionOrder>
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const dbPayload: any = {}
+      if (updates.estado) dbPayload.estado = updates.estado
+      if (updates.descripcion) dbPayload.descripcion = updates.descripcion
+      if (updates.tipo_contenedor) dbPayload.tipo_contenedor = updates.tipo_contenedor
+      if (updates.snapshot_proyeccion) dbPayload.snapshot_proyeccion = updates.snapshot_proyeccion
+      if (updates.total_items !== undefined) dbPayload.total_items = updates.total_items
+      if (updates.total_unidades !== undefined) dbPayload.total_unidades = updates.total_unidades
+
+      if (Object.keys(dbPayload).length > 0) {
+        await supabase.from('orden_importacion').update(dbPayload).eq('id_orden', id_orden)
+      }
+    } catch (err) {
+      console.warn('Supabase update failed, continuing with localStorage:', err)
+    }
+
+    const currentOrders = await this.getOrders()
+    const updatedOrders = currentOrders.map((ord) =>
+      ord.id_orden === id_orden ? { ...ord, ...updates } : ord
+    )
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+
+    return { success: true }
+  },
+
+  async deleteOrder(id_orden: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      await supabase.from('detalle_orden').delete().eq('id_orden', id_orden)
+      await supabase.from('orden_importacion').delete().eq('id_orden', id_orden)
+    } catch (err) {
+      console.warn('Supabase delete failed:', err)
+    }
+
+    const currentOrders = await this.getOrders()
+    const updatedOrders = currentOrders.filter((ord) => ord.id_orden !== id_orden)
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updatedOrders))
+
+    return { success: true }
+  },
+
+  // 11. IMPORTADOR ASISTIDO DE SALIDAS MENSUALES A AGENCIAS DESDE EXCEL
+  async parseMonthlyOutputsExcel(
+    file: File,
+    template: ProjectionTemplate,
+    existingItems: ProjectionItem[]
+  ): Promise<{
+    success: boolean
+    error?: string
+    result?: ExcelImportResult
+    updatedItems?: ProjectionItem[]
+  }> {
+    try {
+      const buffer = await file.arrayBuffer()
+      const wb = XLSX.read(buffer, { type: 'array' })
+      if (!wb.SheetNames || wb.SheetNames.length === 0) {
+        return { success: false, error: 'El archivo Excel no contiene hojas de cálculo legibles.' }
+      }
+
+      // Buscar hoja coincidente con el código de la plantilla o tomar la primera
+      let targetSheetName = wb.SheetNames[0]
+      const tplCodeClean = (template.codigo || '').replace(/[^A-Z0-9]/gi, '').toUpperCase()
+      for (const name of wb.SheetNames) {
+        const cleanName = name.replace(/[^A-Z0-9]/gi, '').toUpperCase()
+        if (cleanName.includes(tplCodeClean) || tplCodeClean.includes(cleanName)) {
+          targetSheetName = name
+          break
+        }
+      }
+
+      const sheet = wb.Sheets[targetSheetName]
+      const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1 })
+      if (!rawRows || rawRows.length < 2) {
+        return {
+          success: false,
+          error: `La hoja "${targetSheetName}" no contiene suficientes filas de datos.`
+        }
+      }
+
+      const normalizeKey = (str: string) =>
+        str
+          .trim()
+          .toUpperCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^A-Z0-9]/g, '')
+
+      const MONTH_NAMES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SET', 'OCT', 'NOV', 'DIC']
+
+      // Función de parseo de fechas robusta (Excel serial, dd/mm/yyyy, yyyy-mm-dd)
+      const parseExcelDate = (val: any): Date | null => {
+        if (typeof val === 'number') {
+          const dc = (XLSX.SSF as any).parse_date_code(val)
+          if (dc) return new Date(dc.y, dc.m - 1, dc.d)
+        }
+        if (typeof val === 'string') {
+          const parts = val.trim().split(/[\/\-\.]/)
+          if (parts.length === 3) {
+            if (parts[0].length === 4) {
+              return new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))
+            } else {
+              return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]))
+            }
+          }
+          const d = new Date(val)
+          if (!isNaN(d.getTime())) return d
+        }
+        if (val instanceof Date) return val
+        return null
+      }
+
+      // 1. Analizar encabezados para detectar si es formato Transaccional (con Fecha) o Matricial (con meses directos)
+      let headerRowIndex = 0
+      let dateColIdx = -1
+      let productColIdx = -1
+      let qtyColIdx = -1
+      let detectedDirectMonths: Array<{ key: string; colIdx: number }> = []
+
+      for (let r = 0; r < Math.min(10, rawRows.length); r++) {
+        const row = rawRows[r]
+        if (!row || !Array.isArray(row)) continue
+
+        row.forEach((cell, idx) => {
+          if (cell === null || cell === undefined) return
+          const str = String(cell).trim().toUpperCase()
+
+          if (str.includes('FECHA') || str === 'DATE' || str.includes('F.DESPACHO') || str.includes('F.SALIDA')) {
+            dateColIdx = idx
+          } else if (
+            str.includes('PROD') ||
+            str.includes('SKU') ||
+            str.includes('DESCRIP') ||
+            str.includes('MATERIAL') ||
+            str.includes('SUMINISTRO')
+          ) {
+            productColIdx = idx
+          } else if (
+            str.includes('CANT') ||
+            str.includes('SALIDA') ||
+            str.includes('UNID') ||
+            str.includes('ENTREGA')
+          ) {
+            qtyColIdx = idx
+          }
+
+          // Detección de meses directos en columnas (modo matricial alternativo)
+          const prefix3 = str.slice(0, 3)
+          if (MONTH_NAMES.includes(str) || MONTH_NAMES.includes(prefix3)) {
+            let stdKey = prefix3
+            if (stdKey === 'SEP') stdKey = 'SET'
+            detectedDirectMonths.push({ key: stdKey, colIdx: idx })
+          }
+        })
+
+        // Si encontramos Fecha + Producto + Cantidad, es formato transaccional por fecha
+        if (dateColIdx >= 0 && productColIdx >= 0) {
+          headerRowIndex = r
+          break
+        }
+
+        // Si encontramos Producto + al menos 2 meses directos, es formato matricial
+        if (productColIdx >= 0 && detectedDirectMonths.length >= 2) {
+          headerRowIndex = r
+          break
+        }
+      }
+
+      // Base limpia de items existentes
+      const updatedItems = existingItems.map((item) => ({
+        ...item,
+        datos_meses: {} as Record<string, number>
+      }))
+
+      let matchedCount = 0
+      const unmatchedProducts: string[] = []
+      const previewRows: Array<{
+        producto: string
+        valoresMeses: Record<string, number>
+        coincide: boolean
+      }> = []
+      let chronologicalMonths: string[] = []
+
+      // =========================================================================
+      // CASO A: FORMATO TRANSACCIONAL DE SALIDAS (Columna Fecha + Producto + Cantidad)
+      // =========================================================================
+      if (dateColIdx >= 0 && productColIdx >= 0) {
+        // Si no se detectó columna explícita de cantidad, buscar columna numérica a la derecha
+        if (qtyColIdx < 0) {
+          qtyColIdx = productColIdx + 1
+        }
+
+        const productMonthTotals: Record<string, Record<string, number>> = {}
+        const detectedMonthsSet = new Set<string>()
+        const monthSortOrder: Record<string, number> = {}
+        const rawProductNameMap: Record<string, string> = {}
+
+        for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
+          const row = rawRows[r]
+          if (!row || !Array.isArray(row)) continue
+
+          const rawDate = row[dateColIdx]
+          const parsedDate = parseExcelDate(rawDate)
+          if (!parsedDate) continue
+
+          const mIdx = parsedDate.getMonth()
+          const mKey = MONTH_NAMES[mIdx]
+          const sortVal = parsedDate.getFullYear() * 100 + mIdx
+          monthSortOrder[mKey] = sortVal
+          detectedMonthsSet.add(mKey)
+
+          const rawProd = row[productColIdx]
+          if (!rawProd || typeof rawProd !== 'string' || !rawProd.trim()) continue
+          const cleanProd = normalizeKey(rawProd)
+          rawProductNameMap[cleanProd] = rawProd.trim()
+
+          const rawQty = row[qtyColIdx]
+          let numQty = 0
+          if (typeof rawQty === 'number' && !isNaN(rawQty)) {
+            numQty = Math.abs(rawQty)
+          } else if (rawQty) {
+            const parsed = parseFloat(String(rawQty).replace(/,/g, ''))
+            if (!isNaN(parsed)) numQty = Math.abs(parsed)
+          }
+
+          if (!productMonthTotals[cleanProd]) {
+            productMonthTotals[cleanProd] = {}
+          }
+          productMonthTotals[cleanProd][mKey] = (productMonthTotals[cleanProd][mKey] || 0) + numQty
+        }
+
+        chronologicalMonths = Array.from(detectedMonthsSet).sort(
+          (a, b) => (monthSortOrder[a] || 0) - (monthSortOrder[b] || 0)
+        )
+
+        if (chronologicalMonths.length === 0) {
+          return {
+            success: false,
+            error:
+              'Se detectó la columna Fecha pero no se pudieron interpretar las fechas del archivo. Usa formato dd/mm/aaaa o aaaa-mm-dd.'
+          }
+        }
+
+        // Cruzar con los productos del catálogo
+        const processedExcelKeys = new Set<string>()
+
+        for (const targetItem of updatedItems) {
+          const itemKey = normalizeKey(targetItem.nombre_producto)
+          // Buscar coincidencia exacta o inclusiva
+          let matchedExcelKey = Object.keys(productMonthTotals).find(
+            (k) => k === itemKey || k.includes(itemKey) || itemKey.includes(k)
+          )
+
+          if (matchedExcelKey && productMonthTotals[matchedExcelKey]) {
+            matchedCount++
+            processedExcelKeys.add(matchedExcelKey)
+            const monthMap = productMonthTotals[matchedExcelKey]
+            const filledMonths: Record<string, number> = {}
+
+            chronologicalMonths.forEach((m) => {
+              const val = monthMap[m] || 0
+              filledMonths[m] = -Math.abs(Math.round(val))
+            })
+
+            targetItem.datos_meses = filledMonths
+
+            if (previewRows.length < 12) {
+              previewRows.push({
+                producto: targetItem.nombre_producto,
+                valoresMeses: filledMonths,
+                coincide: true
+              })
+            }
+          } else {
+            // Producto no vino en el Excel de salidas
+            const zeroMonths: Record<string, number> = {}
+            chronologicalMonths.forEach((m) => {
+              zeroMonths[m] = 0
+            })
+            targetItem.datos_meses = zeroMonths
+          }
+        }
+
+        // Productos del Excel que no coincidieron con la matriz
+        Object.keys(productMonthTotals).forEach((k) => {
+          if (!processedExcelKeys.has(k)) {
+            unmatchedProducts.push(rawProductNameMap[k] || k)
+          }
+        })
+      }
+      // =========================================================================
+      // CASO B: FORMATO MATRICIAL DE SALIDAS (Columnas directas de meses JUN, JUL, etc.)
+      // =========================================================================
+      else if (detectedDirectMonths.length >= 2 && productColIdx >= 0) {
+        chronologicalMonths = Array.from(new Set(detectedDirectMonths.map((m) => m.key)))
+
+        for (let r = headerRowIndex + 1; r < rawRows.length; r++) {
+          const row = rawRows[r]
+          if (!row || !Array.isArray(row)) continue
+
+          const rawProdName = row[productColIdx]
+          if (!rawProdName || typeof rawProdName !== 'string' || !rawProdName.trim()) continue
+          const cleanName = normalizeKey(rawProdName)
+
+          const monthVals: Record<string, number> = {}
+          detectedDirectMonths.forEach((m) => {
+            const rawVal = row[m.colIdx]
+            if (typeof rawVal === 'number' && !isNaN(rawVal)) {
+              monthVals[m.key] = -Math.abs(Math.round(rawVal))
+            } else if (rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== '') {
+              const parsed = parseFloat(String(rawVal).replace(/,/g, ''))
+              if (!isNaN(parsed)) {
+                monthVals[m.key] = -Math.abs(Math.round(parsed))
+              }
+            } else {
+              monthVals[m.key] = 0
+            }
+          })
+
+          const targetItem = updatedItems.find((it) => {
+            const itClean = normalizeKey(it.nombre_producto)
+            return itClean === cleanName || itClean.includes(cleanName) || cleanName.includes(itClean)
+          })
+
+          if (targetItem) {
+            matchedCount++
+            targetItem.datos_meses = monthVals
+            if (previewRows.length < 12) {
+              previewRows.push({
+                producto: targetItem.nombre_producto,
+                valoresMeses: monthVals,
+                coincide: true
+              })
+            }
+          } else {
+            unmatchedProducts.push(rawProdName.trim())
+          }
+        }
+      } else {
+        return {
+          success: false,
+          error:
+            'No se encontraron los encabezados esperados en el Excel. Debe incluir [Fecha, Producto, Cantidad] o columnas directas de meses [JUN, JUL, AGO, etc.].'
+        }
+      }
+
+      return {
+        success: true,
+        result: {
+          fileName: file.name,
+          detectedMonths: chronologicalMonths,
+          matchedCount,
+          totalExcelRows: rawRows.length - (headerRowIndex + 1),
+          unmatchedProducts: Array.from(new Set(unmatchedProducts)),
+          previewRows
+        },
+        updatedItems
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Error al procesar el archivo Excel.'
+      }
     }
   }
 }

@@ -119,3 +119,65 @@ export interface ColumnEquationConfig {
   isCustom?: boolean
   format?: ColumnDisplayFormat
 }
+
+export type ProjectionOrderStatus = 'BORRADOR' | 'TRANSITO' | 'RECIBIDA'
+
+export interface ProjectionOrderDetail {
+  id_detalle?: number
+  id_orden?: number
+  id_producto: number
+  cantidad_pedida: number
+  subtotal_peso_kg?: number | null
+  subtotal_volumen_m3?: number | null
+  producto?: {
+    id_producto?: number
+    sku: string
+    nombre: string
+  } | null
+}
+
+export interface ProjectionOrderSnapshot {
+  templateId?: number
+  templateCodigo?: string
+  startMonth?: string
+  endMonth?: string
+  columnas_meses?: string[]
+  ignoreZeroMonths?: boolean
+  items?: ProjectionItem[]
+  calculatedRows?: CalculatedProjectionRow[]
+  customColumns?: CustomProjectionColumn[]
+}
+
+export interface ProjectionOrder {
+  id_orden: number
+  numero_orden: string
+  descripcion?: string | null
+  id_plantilla?: number | null
+  id_proveedor?: number | null
+  estado: ProjectionOrderStatus
+  fecha_emision: string
+  tipo_contenedor: '20FT' | '40FT' | 'LCL' | null
+  volumen_ocupado_m3?: number | null
+  total_items?: number
+  total_unidades?: number
+  proveedor?: {
+    id_proveedor: number
+    razon_social: string
+    nombre?: string
+  } | null
+  detalles?: ProjectionOrderDetail[]
+  snapshot_proyeccion?: ProjectionOrderSnapshot | null
+}
+
+export interface ExcelImportResult {
+  fileName: string
+  detectedMonths: string[]
+  matchedCount: number
+  totalExcelRows: number
+  unmatchedProducts: string[]
+  previewRows: Array<{
+    producto: string
+    valoresMeses: Record<string, number>
+    coincide: boolean
+  }>
+}
