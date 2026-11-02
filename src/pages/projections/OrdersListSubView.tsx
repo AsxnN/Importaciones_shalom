@@ -7,6 +7,7 @@ interface OrdersListSubViewProps {
   onCreateOrderClick: () => void
   onDeleteOrder: (id_orden: number) => Promise<void>
   onOpenReceptions?: () => void
+  onOpenPackingPlan?: (order: ProjectionOrder) => void
   onBack: () => void
   loading: boolean
 }
@@ -17,6 +18,7 @@ export function OrdersListSubView({
   onCreateOrderClick,
   onDeleteOrder,
   onOpenReceptions,
+  onOpenPackingPlan,
   onBack,
   loading
 }: OrdersListSubViewProps) {
@@ -400,6 +402,12 @@ export function OrdersListSubView({
                           ({ord.total_unidades.toLocaleString('es-PE')} unid)
                         </span>
                       ) : null}
+                      {ord.total_bultos ? (
+                        <div style={{ fontSize: '11px', color: 'var(--color-brand)', fontWeight: 600, marginTop: '2px' }}>
+                          📦 {ord.total_bultos} paleta(s) ({ord.total_paletas_completas || 0} comp.
+                          {ord.total_puchos ? ` + ${ord.total_puchos} pucho` : ''})
+                        </div>
+                      ) : null}
                     </td>
                     <td>{renderStatusBadge(ord.estado)}</td>
                     <td style={{ textAlign: 'center' }}>
@@ -415,6 +423,17 @@ export function OrdersListSubView({
                         >
                           Abrir matriz
                         </button>
+
+                        {onOpenPackingPlan && (
+                          <button
+                            type="button"
+                            className="button secondary button-sm"
+                            onClick={() => onOpenPackingPlan(ord)}
+                            title="Ver desglose físico de paletas y descargar rótulos Excel para muelle"
+                          >
+                            📦 Paletas
+                          </button>
+                        )}
 
                         {isDraft ? (
                           <button

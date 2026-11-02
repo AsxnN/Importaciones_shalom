@@ -797,20 +797,47 @@ export const projectionService = {
     }
 
     try {
-      // 1. Insertar orden en public.orden_importacion
-      const { data: orden, error: ordenError } = await supabase
-        .from('orden_importacion')
-        .insert({
-          numero_orden: numeroOrden.trim().toUpperCase(),
-          estado: 'TRANSITO',
-          tipo_contenedor: tipoContenedor,
-          fecha_emision: new Date().toISOString().split('T')[0]
-        })
-        .select('id_orden')
-        .single()
+      // 1. Verificar si la orden ya existe en public.orden_importacion
+      let targetIdOrden: number | null = null
 
-      if (ordenError || !orden) {
-        return { success: false, error: ordenError?.message || 'Error al crear la orden de importación.' }
+      const { data: existingOrd } = await supabase
+        .from('orden_importacion')
+        .select('id_orden')
+        .eq('numero_orden', numeroOrden.trim().toUpperCase())
+        .maybeSingle()
+
+      if (existingOrd?.id_orden) {
+        targetIdOrden = existingOrd.id_orden
+        await supabase
+          .from('orden_importacion')
+          .update({
+            estado: 'TRANSITO',
+            tipo_contenedor: tipoContenedor,
+            fecha_emision: new Date().toISOString().split('T')[0]
+          })
+          .eq('id_orden', targetIdOrden)
+
+        // Limpiar detalles previos si los hubiera para insertar el nuevo cálculo
+        await supabase
+          .from('detalle_orden')
+          .delete()
+          .eq('id_orden', targetIdOrden)
+      } else {
+        const { data: orden, error: ordenError } = await supabase
+          .from('orden_importacion')
+          .insert({
+            numero_orden: numeroOrden.trim().toUpperCase(),
+            estado: 'TRANSITO',
+            tipo_contenedor: tipoContenedor,
+            fecha_emision: new Date().toISOString().split('T')[0]
+          })
+          .select('id_orden')
+          .single()
+
+        if (ordenError || !orden) {
+          return { success: false, error: ordenError?.message || 'Error al crear la orden de importación.' }
+        }
+        targetIdOrden = orden.id_orden
       }
 
       // 2. Asociar ítems en detalle_orden (buscar o crear producto si es necesario)
@@ -848,7 +875,7 @@ export const projectionService = {
 
         if (idProd && row.compra_sugerida > 0) {
           detalles.push({
-            id_orden: orden.id_orden,
+            id_orden: targetIdOrden,
             id_producto: idProd,
             cantidad_pedida: row.compra_sugerida
           })
@@ -865,7 +892,7 @@ export const projectionService = {
         }
       }
 
-      return { success: true, id_orden: orden.id_orden }
+      return { success: true, id_orden: targetIdOrden ?? undefined }
     } catch (err: any) {
       return { success: false, error: err.message || 'Error inesperado al generar la orden.' }
     }
@@ -879,16 +906,11 @@ export const projectionService = {
         .select(`
           id_orden,
           numero_orden,
-          descripcion,
-          id_plantilla,
           id_proveedor,
           estado,
           fecha_emision,
           tipo_contenedor,
           volumen_ocupado_m3,
-          total_items,
-          total_unidades,
-          snapshot_proyeccion,
           proveedor ( id_proveedor, razon_social ),
           detalle_orden (
             id_detalle,
@@ -897,7 +919,18 @@ export const projectionService = {
             cantidad_pedida,
             subtotal_peso_kg,
             subtotal_volumen_m3,
-            producto ( id_producto, sku, nombre )
+            producto (
+              id_producto,
+              sku,
+              nombre,
+              regla_empaque (
+                unidades_por_caja,
+                cajas_por_camada,
+                numero_camadas,
+                cajas_por_camita,
+                camitas_por_paleta
+              )
+            )
           )
         `)
         .order('fecha_emision', { ascending: false })
@@ -905,11 +938,67 @@ export const projectionService = {
 
       if (!error && data && data.length > 0) {
         const formatted: ProjectionOrder[] = data.map((ord: any) => {
-          const detalles = ord.detalle_orden || []
-          const calcItems = ord.total_items || detalles.length
+          const rawDetalles = ord.detalle_orden || []
+          const calcItems = ord.total_items || rawDetalles.length
           const calcUnits =
             ord.total_unidades ||
-            detalles.reduce((acc: number, d: any) => acc + (Number(d.cantidad_pedida) || 0), 0)
+            rawDetalles.reduce((acc: number, d: any) => acc + (Number(d.cantidad_pedida) || 0), 0)
+
+          let sumPaletasCompletas = 0
+          let sumPuchos = 0
+          let sumBultos = 0
+
+          const detalles = rawDetalles.map((d: any) => {
+            const rawRegla = d.producto?.regla_empaque
+            const r = Array.isArray(rawRegla) ? rawRegla[0] : rawRegla
+            const unidCaja = Number(r?.unidades_por_caja) || 50
+            let cajasPal = 48
+            if (r?.cajas_por_camada && r?.numero_camadas) {
+              cajasPal = Number(r.cajas_por_camada) * Number(r.numero_camadas)
+            } else if (r?.cajas_por_camita && r?.camitas_por_paleta) {
+              cajasPal = Number(r.cajas_por_camita) * Number(r.camitas_por_paleta)
+            }
+            cajasPal = Math.max(1, cajasPal)
+            const unidPal = unidCaja * cajasPal
+
+            const cant = Number(d.cantidad_pedida) || 0
+            const cajasTot = Math.ceil(cant / unidCaja)
+            const palCompletas = Math.floor(cant / unidPal)
+            const unidRest = cant % unidPal
+            const cajPucho = unidRest > 0 ? Math.ceil(unidRest / unidCaja) : 0
+            const totBultos = palCompletas + (cajPucho > 0 ? 1 : 0)
+
+            sumPaletasCompletas += palCompletas
+            sumPuchos += (cajPucho > 0 ? 1 : 0)
+            sumBultos += totBultos
+
+            return {
+              id_detalle: d.id_detalle,
+              id_orden: d.id_orden,
+              id_producto: d.id_producto,
+              cantidad_pedida: d.cantidad_pedida,
+              subtotal_peso_kg: d.subtotal_peso_kg,
+              subtotal_volumen_m3: d.subtotal_volumen_m3,
+              desglose_empaque: {
+                unidades_por_caja: unidCaja,
+                cajas_por_paleta: cajasPal,
+                unidades_por_paleta: unidPal,
+                cajas_totales: cajasTot,
+                paletas_completas: palCompletas,
+                cajas_pucho: cajPucho,
+                unidades_pucho: unidRest,
+                total_paletas_bultos: totBultos
+              },
+              producto: d.producto
+                ? {
+                    id_producto: d.producto.id_producto,
+                    sku: d.producto.sku,
+                    nombre: d.producto.nombre,
+                    regla_empaque: r
+                  }
+                : undefined
+            }
+          })
 
           return {
             id_orden: ord.id_orden,
@@ -923,6 +1012,9 @@ export const projectionService = {
             volumen_ocupado_m3: ord.volumen_ocupado_m3 || null,
             total_items: calcItems,
             total_unidades: calcUnits,
+            total_paletas_completas: sumPaletasCompletas,
+            total_puchos: sumPuchos,
+            total_bultos: sumBultos,
             proveedor: ord.proveedor
               ? {
                   id_proveedor: ord.proveedor.id_proveedor,
@@ -930,21 +1022,7 @@ export const projectionService = {
                   nombre: ord.proveedor.razon_social
                 }
               : null,
-            detalles: detalles.map((d: any) => ({
-              id_detalle: d.id_detalle,
-              id_orden: d.id_orden,
-              id_producto: d.id_producto,
-              cantidad_pedida: d.cantidad_pedida,
-              subtotal_peso_kg: d.subtotal_peso_kg,
-              subtotal_volumen_m3: d.subtotal_volumen_m3,
-              producto: d.producto
-                ? {
-                    id_producto: d.producto.id_producto,
-                    sku: d.producto.sku,
-                    nombre: d.producto.nombre
-                  }
-                : undefined
-            })),
+            detalles,
             snapshot_proyeccion: ord.snapshot_proyeccion || null
           }
         })
@@ -1000,13 +1078,10 @@ export const projectionService = {
         .from('orden_importacion')
         .insert({
           numero_orden: cleanNum,
-          descripcion: cleanDesc,
-          id_plantilla: plantillaId,
           id_proveedor: payload.id_proveedor || null,
           tipo_contenedor: container,
           estado: status,
-          fecha_emision: emision,
-          snapshot_proyeccion: payload.snapshot_proyeccion || {}
+          fecha_emision: emision
         })
         .select('id_orden')
         .single()
@@ -1054,11 +1129,9 @@ export const projectionService = {
     try {
       const dbPayload: any = {}
       if (updates.estado) dbPayload.estado = updates.estado
-      if (updates.descripcion) dbPayload.descripcion = updates.descripcion
       if (updates.tipo_contenedor) dbPayload.tipo_contenedor = updates.tipo_contenedor
-      if (updates.snapshot_proyeccion) dbPayload.snapshot_proyeccion = updates.snapshot_proyeccion
-      if (updates.total_items !== undefined) dbPayload.total_items = updates.total_items
-      if (updates.total_unidades !== undefined) dbPayload.total_unidades = updates.total_unidades
+      if (updates.volumen_ocupado_m3 !== undefined) dbPayload.volumen_ocupado_m3 = updates.volumen_ocupado_m3
+      if (updates.fecha_emision) dbPayload.fecha_emision = updates.fecha_emision
 
       if (Object.keys(dbPayload).length > 0) {
         await supabase.from('orden_importacion').update(dbPayload).eq('id_orden', id_orden)

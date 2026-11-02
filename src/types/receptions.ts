@@ -10,6 +10,7 @@ export interface ReceptionReadingItem {
   cantidad_paquetes: number
   codigo_barras?: string
   numero_serie?: string
+  id_producto?: number
   notas?: string
 }
 
@@ -77,6 +78,7 @@ export interface ImportOrder {
   fecha_emision: string
   tipo_contenedor: '20FT' | '40FT' | 'LCL' | null
   volumen_ocupado_m3: number | null
+  snapshot_proyeccion?: any
   proveedor?: {
     id_proveedor: number
     razon_social: string

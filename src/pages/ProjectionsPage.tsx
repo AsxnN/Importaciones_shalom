@@ -5,6 +5,7 @@ import {
   type FormulaEvaluationContext
 } from '../services/projectionFormulaEngine'
 import { receptionService } from '../services/receptionService'
+import { packingListService, type OrderPackingPlan } from '../services/packingListService'
 import { OrdersListSubView } from './projections/OrdersListSubView'
 import { NewOrderModal } from './projections/NewOrderModal'
 import { ExcelImportModal } from './projections/ExcelImportModal'
@@ -122,8 +123,62 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
   // Modal de Agregar Producto
   const [addProductModalOpen, setAddProductModalOpen] = useState(false)
   const [newProductName, setNewProductName] = useState('')
+
+  // Modal y plan de paletizado / packing list
+  const [packingPlanModal, setPackingPlanModal] = useState<OrderPackingPlan | null>(null)
+  const [packingModalTab, setPackingModalTab] = useState<'summary' | 'tags'>('summary')
+  const [copiedTag, setCopiedTag] = useState<string | null>(null)
+  const [isGeneratingPackingPlan, setIsGeneratingPackingPlan] = useState(false)
   const [newProductStock, setNewProductStock] = useState<number>(0)
   const [isAddingProduct, setIsAddingProduct] = useState(false)
+
+  const handleCopyTag = (tag: string) => {
+    navigator.clipboard.writeText(tag)
+    setCopiedTag(tag)
+    setTimeout(() => setCopiedTag(null), 2000)
+  }
+
+  const allIndividualPallets = useMemo(() => {
+    if (!packingPlanModal) return []
+    const list: Array<{
+      correlativo: number
+      uid_tag: string
+      sku: string
+      nombre: string
+      tipo: 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'
+      cajas: number
+      unidades: number
+    }> = []
+
+    let idx = 1
+    for (const prod of packingPlanModal.productos) {
+      for (const pal of prod.paletas) {
+        list.push({
+          correlativo: idx++,
+          uid_tag: pal.uid_tag,
+          sku: prod.sku,
+          nombre: prod.nombre,
+          tipo: pal.tipo,
+          cajas: pal.cajas,
+          unidades: pal.unidades
+        })
+      }
+    }
+
+    for (const res of packingPlanModal.etiquetas_reserva) {
+      list.push({
+        correlativo: idx++,
+        uid_tag: res.uid_tag,
+        sku: 'RESERVA',
+        nombre: 'Tag de contingencia para excedentes en muelle',
+        tipo: 'RESERVA_EXCEDENTE',
+        cajas: 0,
+        unidades: 0
+      })
+    }
+
+    return list
+  }, [packingPlanModal])
 
   // Modal de Generar Orden de Importación
   const [orderModalOpen, setOrderModalOpen] = useState(false)
@@ -303,6 +358,38 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
     setSuccessMsg('Orden eliminada correctamente del historial.')
   }
 
+  const handleOpenPackingPlan = async (targetOrder?: ProjectionOrder) => {
+    const ord = targetOrder || selectedOrder
+    if (!ord) return
+
+    setIsGeneratingPackingPlan(true)
+    setErrorMsg(null)
+    try {
+      let orderToPlan = ord
+      if ((!ord.detalles || ord.detalles.length === 0) && calculatedRows.length > 0) {
+        const rowsWithPurchase = calculatedRows.filter((r) => r.compra_sugerida > 0)
+        orderToPlan = {
+          ...ord,
+          detalles: rowsWithPurchase.map((r) => ({
+            id_producto: r.id_producto || 0,
+            cantidad_pedida: r.compra_sugerida,
+            producto: {
+              sku: `PROD-${r.id_producto || 'A'}`,
+              nombre: r.nombre_producto
+            }
+          }))
+        }
+      }
+
+      const plan = await packingListService.generateOrderPackingPlan(orderToPlan, 'IMP')
+      setPackingPlanModal(plan)
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error al generar el plan de paletizado y packing list.')
+    } finally {
+      setIsGeneratingPackingPlan(false)
+    }
+  }
+
   const handleEmitActiveOrder = async () => {
     if (!selectedOrder) return
 
@@ -353,6 +440,12 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
       setSuccessMsg(
         `¡Orden ${selectedOrder.numero_orden} emitida con éxito a Tránsito Marítimo con ${rowsWithPurchase.length} productos (${sumUnits.toLocaleString('es-PE')} unid)! Ya está disponible en el Módulo 04 (Recepciones) para su control en muelle.`
       )
+
+      // Abrir de inmediato el plan de paletizado y descarga de etiquetas para el usuario
+      try {
+        const plan = await packingListService.generateOrderPackingPlan(freshOrder, 'IMP')
+        setPackingPlanModal(plan)
+      } catch {}
     } catch (err: any) {
       setErrorMsg(err.message || 'Error al emitir la orden a tránsito.')
     } finally {
@@ -1187,6 +1280,7 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
           onCreateOrderClick={() => setNewOrderModalOpen(true)}
           onDeleteOrder={handleDeleteOrder}
           onOpenReceptions={onOpenReceptions}
+          onOpenPackingPlan={handleOpenPackingPlan}
           onBack={onBack}
           loading={loading}
         />
@@ -1358,6 +1452,18 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
               title="Confirmar los cálculos y emitir la orden a Tránsito para recepción en Módulo 04"
             >
               {isEmittingOrder ? 'Emitiendo a tránsito...' : 'Confirmar y emitir a tránsito'}
+            </button>
+          )}
+
+          {selectedOrder && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => handleOpenPackingPlan()}
+              disabled={isGeneratingPackingPlan}
+              title="Ver desglose de paletas por producto y descargar packing list con códigos para muelle"
+            >
+              {isGeneratingPackingPlan ? 'Generando...' : '📦 Packing List / Paletas'}
             </button>
           )}
 
@@ -2753,6 +2859,34 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
               Elige las variables de datos y operadores matemáticos para construir la fórmula que
               calculará el valor de esta columna por cada producto, al igual que en una hoja de Excel.
             </p>
+
+            {/* Explicación didáctica interactiva si se edita la Duración */}
+            {selectedColumnForEquation === 'meses_duracion' && (
+              <div
+                style={{
+                  padding: '12px 14px',
+                  background: 'var(--color-brand-soft)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: '6px',
+                  marginBottom: '14px',
+                  fontSize: '13px',
+                  color: 'var(--color-brand-deep)'
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: '4px' }}>
+                  💡 ¿Cómo funciona el cálculo de Duración?
+                </div>
+                <div style={{ lineHeight: '1.4' }}>
+                  Indica cuántos meses y días te durará tu inventario físico actual antes de quedarte en cero (quiebre de existencias).
+                  <br />
+                  <strong>Ejemplo intuitivo:</strong> Si tienes <strong>1,200 unidades</strong> en almacén y el promedio mensual de salida a agencias es de <strong>400 unid/mes</strong>:
+                  <br />
+                  <code style={{ background: '#FFF', padding: '2px 8px', borderRadius: '4px', display: 'inline-block', marginTop: '6px', border: '1px solid var(--color-border)' }}>
+                    Duración = 1,200 ÷ 400 = 3.0 meses (90 días de cobertura)
+                  </code>
+                </div>
+              </div>
+            )}
 
             {/* Pestañas para cambiar rápidamente de columna si lo desea */}
             <div
@@ -4307,6 +4441,377 @@ export function ProjectionsPage({ onBack, onOpenReceptions }: ProjectionsPagePro
         items={items}
         onApply={handleApplyExcelOutputs}
       />
+
+      {/* Modal de Plan de Paletizado, Desglose de Empaque y Packing List */}
+      {packingPlanModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card" style={{ maxWidth: '880px', width: '92%' }}>
+            <div className="modal-header">
+              <div>
+                <span
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--color-brand)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px'
+                  }}
+                >
+                  Plan de Paletizado y Rótulos de Muelle
+                </span>
+                <h2
+                  className="modal-title"
+                  style={{ margin: '2px 0 0 0', fontSize: '20px', color: 'var(--color-brand-deep)' }}
+                >
+                  Packing List — Orden {packingPlanModal.numero_orden}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setPackingPlanModal(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="muted" style={{ margin: '0 0 16px 0', fontSize: '13px' }}>
+              Desglose físico calculado según las reglas estándar de estiba del catálogo. Cada paleta cuenta con su código de barra correlativo reservado con el prefijo <strong>{packingPlanModal.prefijo_almacen}</strong>, listo para descarga y etiquetado en el muelle de descarga.
+            </p>
+
+            {/* Tira de Métricas del Contenedor */}
+            <div className="indicator-strip" style={{ marginBottom: '16px' }}>
+              <div className="indicator-card">
+                <span className="indicator-label">Unidades totales</span>
+                <span className="indicator-value">{packingPlanModal.total_unidades.toLocaleString('es-PE')}</span>
+                <span className="indicator-context">Contenedor {packingPlanModal.contenedor}</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Cajas totales</span>
+                <span className="indicator-value">{packingPlanModal.total_cajas.toLocaleString('es-PE')}</span>
+                <span className="indicator-context">En todo el embarque</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Paletas completas</span>
+                <span className="indicator-value" style={{ color: 'var(--color-brand)' }}>
+                  {packingPlanModal.total_paletas_completas}
+                </span>
+                <span className="indicator-context">Carga estándar homogénea</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Cajas pucho / parciales</span>
+                <span className="indicator-value" style={{ color: packingPlanModal.total_puchos > 0 ? 'var(--color-warning)' : 'inherit' }}>
+                  {packingPlanModal.total_puchos}
+                </span>
+                <span className="indicator-context">
+                  {packingPlanModal.total_puchos > 0 ? 'Paleta con cajas sueltas' : 'Sin sobrantes sueltos'}
+                </span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Total bultos esperados</span>
+                <span className="indicator-value" style={{ color: 'var(--color-success)' }}>
+                  {packingPlanModal.total_bultos_previstos}
+                </span>
+                <span className="indicator-context">+5 tags reserva muelle</span>
+              </div>
+            </div>
+
+            {/* Pestañas de Vista: Resumen vs Lista Completa de Etiquetas */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  className={`button ${packingModalTab === 'summary' ? 'primary' : 'secondary'} button-sm`}
+                  onClick={() => setPackingModalTab('summary')}
+                >
+                  Resumen por producto ({packingPlanModal.productos.length})
+                </button>
+                <button
+                  type="button"
+                  className={`button ${packingModalTab === 'tags' ? 'primary' : 'secondary'} button-sm`}
+                  onClick={() => setPackingModalTab('tags')}
+                >
+                  🏷️ Lista completa de códigos separados ({allIndividualPallets.length})
+                </button>
+              </div>
+              {copiedTag && (
+                <span style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600 }}>
+                  ✓ Código {copiedTag} copiado al portapapeles
+                </span>
+              )}
+            </div>
+
+            {/* Vista 1: Resumen por Producto */}
+            {packingModalTab === 'summary' && (
+              <div className="table-wrap" style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Producto</th>
+                      <th style={{ textAlign: 'right' }}>Cantidad</th>
+                      <th style={{ textAlign: 'right' }}>Unid/Caja</th>
+                      <th style={{ textAlign: 'right' }}>Cajas/Paleta</th>
+                      <th style={{ textAlign: 'center' }}>Paletas completas</th>
+                      <th style={{ textAlign: 'center' }}>Cajas pucho</th>
+                      <th>Códigos asignados</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {packingPlanModal.productos.map((prod) => {
+                      const completasTags = prod.paletas.filter((p) => p.tipo === 'COMPLETO').map((p) => p.uid_tag)
+                      const puchoTag = prod.paletas.find((p) => p.tipo === 'PUCHO')?.uid_tag
+
+                      return (
+                        <tr key={prod.id_producto}>
+                          <td>
+                            <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                              {prod.sku}
+                            </code>
+                          </td>
+                          <td>
+                            <strong style={{ color: 'var(--color-text-primary)' }}>{prod.nombre}</strong>
+                          </td>
+                          <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                            {prod.cantidad_pedida.toLocaleString('es-PE')}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>{prod.unidades_por_caja}</td>
+                          <td style={{ textAlign: 'right' }}>{prod.cajas_por_paleta}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span
+                              style={{
+                                background: 'var(--color-brand-soft)',
+                                color: 'var(--color-brand-deep)',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                fontWeight: 600,
+                                fontSize: '12px'
+                              }}
+                            >
+                              {prod.paletas_completas} paleta(s)
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            {prod.cajas_pucho > 0 ? (
+                              <span
+                                style={{
+                                  background: '#FFF8EE',
+                                  color: 'var(--color-warning)',
+                                  border: '1px solid #F5D399',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                  fontSize: '12px'
+                                }}
+                              >
+                                {prod.cajas_pucho} caja(s)
+                              </span>
+                            ) : (
+                              <span className="muted" style={{ fontSize: '12px' }}>0</span>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '70px', overflowY: 'auto' }}>
+                              {completasTags.map((t) => (
+                                <code
+                                  key={t}
+                                  onClick={() => handleCopyTag(t)}
+                                  style={{
+                                    background: 'var(--color-canvas)',
+                                    border: '1px solid var(--color-border)',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Clic para copiar código"
+                                >
+                                  {t}
+                                </code>
+                              ))}
+                              {puchoTag && (
+                                <code
+                                  key={puchoTag}
+                                  onClick={() => handleCopyTag(puchoTag)}
+                                  style={{
+                                    background: '#FFF8EE',
+                                    border: '1px solid #F5D399',
+                                    color: 'var(--color-warning)',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Código reservado para paleta pucho (Clic para copiar)"
+                                >
+                                  {puchoTag} (P)
+                                </code>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Vista 2: Lista Detallada de Códigos y Paletas Separadas */}
+            {packingModalTab === 'tags' && (
+              <div className="table-wrap" style={{ maxHeight: '320px', overflowY: 'auto', marginBottom: '14px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: '40px', textAlign: 'center' }}>#</th>
+                      <th>Código / Tag RFID</th>
+                      <th>Tipo de paleta</th>
+                      <th>SKU</th>
+                      <th>Producto</th>
+                      <th style={{ textAlign: 'right' }}>Cajas</th>
+                      <th style={{ textAlign: 'right' }}>Unidades</th>
+                      <th style={{ textAlign: 'center', width: '90px' }}>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allIndividualPallets.map((item) => (
+                      <tr key={item.uid_tag + '-' + item.correlativo}>
+                        <td style={{ textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '12px' }}>
+                          {item.correlativo}
+                        </td>
+                        <td>
+                          <code
+                            style={{
+                              fontSize: '12px',
+                              fontWeight: 700,
+                              color: item.tipo === 'PUCHO' ? 'var(--color-warning)' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-text-secondary)' : 'var(--color-brand)',
+                              background: item.tipo === 'PUCHO' ? '#FFF8EE' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-canvas)' : 'var(--color-brand-soft)',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              border: item.tipo === 'RESERVA_EXCEDENTE' ? '1px dashed var(--color-border)' : '1px solid transparent'
+                            }}
+                          >
+                            {item.uid_tag}
+                          </code>
+                        </td>
+                        <td>
+                          {item.tipo === 'COMPLETO' && (
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                              Paleta estándar completa
+                            </span>
+                          )}
+                          {item.tipo === 'PUCHO' && (
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-warning)' }}>
+                              Pucho (Cajas sueltas)
+                            </span>
+                          )}
+                          {item.tipo === 'RESERVA_EXCEDENTE' && (
+                            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-secondary)' }}>
+                              Reserva muelle (Excedente)
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <code style={{ fontSize: '11px', color: 'var(--color-brand-deep)' }}>{item.sku}</code>
+                        </td>
+                        <td>
+                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>
+                            {item.nombre}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {item.cajas > 0 ? item.cajas.toLocaleString('es-PE') : '—'}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {item.unidades > 0 ? item.unidades.toLocaleString('es-PE') : '—'}
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            className="button secondary button-sm"
+                            style={{ padding: '2px 8px', fontSize: '11px' }}
+                            onClick={() => handleCopyTag(item.uid_tag)}
+                          >
+                            {copiedTag === item.uid_tag ? '✓ Copiado' : 'Copiar'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Banner de Códigos de Contingencia para Excedentes */}
+            <div
+              style={{
+                backgroundColor: 'var(--color-canvas)',
+                border: '1px solid var(--color-border)',
+                borderRadius: '6px',
+                padding: '12px 16px',
+                marginBottom: '16px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '10px'
+              }}
+            >
+              <div>
+                <strong style={{ fontSize: '13px', color: 'var(--color-brand-deep)' }}>
+                  Etiquetas de contingencia / reserva para excedentes:
+                </strong>
+                <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '12px' }}>
+                  Si el contenedor trae paletas o cajas adicionales no contempladas, utiliza estos códigos pre-impresos para registrar el excedente sin detener la descarga.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {packingPlanModal.etiquetas_reserva.map((r) => (
+                  <code
+                    key={r.uid_tag}
+                    style={{
+                      background: 'var(--color-surface)',
+                      border: '1px dashed var(--color-border)',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: 'var(--color-brand)'
+                    }}
+                  >
+                    {r.uid_tag}
+                  </code>
+                ))}
+              </div>
+            </div>
+
+            {/* Acciones del Modal */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <span className="muted" style={{ fontSize: '12px' }}>
+                El archivo descargable contiene 2 hojas: Resumen técnico y Rótulos con casillas de verificación para el operario.
+              </span>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setPackingPlanModal(null)}
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="button"
+                  className="button primary"
+                  onClick={() => packingListService.exportPackingListToExcel(packingPlanModal)}
+                >
+                  Descargar Excel para muelle (.xlsx)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

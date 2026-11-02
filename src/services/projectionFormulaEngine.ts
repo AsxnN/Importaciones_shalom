@@ -448,23 +448,29 @@ export const projectionFormulaEngine = {
           key: 'meses_duracion',
           label: 'Meses de duración',
           headerTitle: 'Duración',
-          currentFormula: template.formula_meses_duracion || '(stock_real * lead_time_meses) / stock_redondeado',
-          defaultFormula: '(stock_real * lead_time_meses) / stock_redondeado',
+          currentFormula: template.formula_meses_duracion || 'STOCK_REAL / (PROM_MEN > 0 ? PROM_MEN : 1)',
+          defaultFormula: 'STOCK_REAL / (PROM_MEN > 0 ? PROM_MEN : 1)',
           availableVariables: VARIABLE_GLOSSARY.filter((v) =>
-            ['STOCK_REAL', 'LEAD_TIME', 'STOCK_REDONDEADO', 'PROM_MEN', 'STOCK_MIN_F'].includes(v.token)
+            ['STOCK_REAL', 'LEAD_TIME', 'STOCK_REDONDEADO', 'PROM_MEN', 'STOCK_MIN_F', 'COMPRA_SUGERIDA'].includes(v.token)
           ),
           presets: [
             {
-              id: 'excel_std',
-              label: 'Estándar Excel Shalom ((Stock Real × Lead Time) / Stock Redondeado)',
-              formula: '(STOCK_REAL * LEAD_TIME) / (STOCK_REDONDEADO > 0 ? STOCK_REDONDEADO : 1)',
-              description: 'Fórmula original de la hoja Excel Shalom IMP-STO.'
+              id: 'duracion_consumo',
+              label: '(Recomendado) Duración real por consumo mensual (Stock Real ÷ Promedio)',
+              formula: 'STOCK_REAL / (PROM_MEN > 0 ? PROM_MEN : 1)',
+              description: 'Responde: ¿Cuántos meses te durará tu inventario físico actual antes de quebrar stock?'
             },
             {
-              id: 'duracion_consumo',
-              label: 'Duración por consumo promedio mensual (Stock Real / Promedio)',
-              formula: 'STOCK_REAL / (PROM_MEN > 0 ? PROM_MEN : 1)',
-              description: 'Cobertura directa de meses de venta o despacho según la tasa de consumo promedio.'
+              id: 'cobertura_post_embarque',
+              label: 'Cobertura total post-llegada ((Stock Real + Compra) ÷ Promedio)',
+              formula: '(STOCK_REAL + COMPRA_SUGERIDA) / (PROM_MEN > 0 ? PROM_MEN : 1)',
+              description: 'Responde: ¿Hasta qué fecha estarás abastecido una vez que llegue el contenedor?'
+            },
+            {
+              id: 'excel_std',
+              label: 'Fórmula clásica Excel Shalom ((Stock Real × Lead Time) ÷ Stock Redondeado)',
+              formula: '(STOCK_REAL * LEAD_TIME) / (STOCK_REDONDEADO > 0 ? STOCK_REDONDEADO : 1)',
+              description: 'Fórmula de referencia proporcional del reporte histórico Shalom IMP-STO.'
             }
           ]
         }
@@ -612,10 +618,10 @@ export const projectionFormulaEngine = {
     if (template.formula_meses_duracion && template.formula_meses_duracion.trim()) {
       mesesDuracion = this.evaluateFormula(template.formula_meses_duracion, evalCtx)
     } else {
-      if (stockMinRedondeado > 0) {
-        mesesDuracion = (stockReal * leadTime) / stockMinRedondeado
-      } else if (promedioFinal > 0) {
+      if (promedioFinal > 0) {
         mesesDuracion = stockReal / promedioFinal
+      } else if (stockMinRedondeado > 0) {
+        mesesDuracion = (stockReal * leadTime) / stockMinRedondeado
       }
     }
     evalCtx.MESES_DURACION = Number(mesesDuracion.toFixed(2))

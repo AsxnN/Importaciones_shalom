@@ -122,6 +122,19 @@ export interface ColumnEquationConfig {
 
 export type ProjectionOrderStatus = 'BORRADOR' | 'TRANSITO' | 'RECIBIDA'
 
+export interface PalletPackingBreakdown {
+  unidades_por_caja: number
+  cajas_por_paleta: number
+  unidades_por_paleta: number
+  cajas_totales: number
+  paletas_completas: number
+  cajas_pucho: number
+  unidades_pucho: number
+  total_paletas_bultos: number
+  codigos_completas?: string[]
+  codigo_pucho?: string
+}
+
 export interface ProjectionOrderDetail {
   id_detalle?: number
   id_orden?: number
@@ -129,10 +142,12 @@ export interface ProjectionOrderDetail {
   cantidad_pedida: number
   subtotal_peso_kg?: number | null
   subtotal_volumen_m3?: number | null
+  desglose_empaque?: PalletPackingBreakdown
   producto?: {
     id_producto?: number
     sku: string
     nombre: string
+    regla_empaque?: any
   } | null
 }
 
@@ -146,6 +161,9 @@ export interface ProjectionOrderSnapshot {
   items?: ProjectionItem[]
   calculatedRows?: CalculatedProjectionRow[]
   customColumns?: CustomProjectionColumn[]
+  total_paletas_completas?: number
+  total_puchos?: number
+  total_bultos?: number
 }
 
 export interface ProjectionOrder {
@@ -160,6 +178,9 @@ export interface ProjectionOrder {
   volumen_ocupado_m3?: number | null
   total_items?: number
   total_unidades?: number
+  total_paletas_completas?: number
+  total_puchos?: number
+  total_bultos?: number
   proveedor?: {
     id_proveedor: number
     razon_social: string

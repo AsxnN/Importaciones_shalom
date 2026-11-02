@@ -5,6 +5,7 @@ import {
   type ProductOption,
   type SupplierOption
 } from '../services/receptionService'
+import { packingListService, type OrderPackingPlan } from '../services/packingListService'
 import type {
   ConciliationResult,
   ImportOrder,
@@ -86,6 +87,75 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
     }
   }
 
+  // Modal y visualizador de Packing List de la orden
+  const [orderPackingModal, setOrderPackingModal] = useState<OrderPackingPlan | null>(null)
+  const [orderPackingTab, setOrderPackingTab] = useState<'summary' | 'tags'>('summary')
+  const [copiedPackingTag, setCopiedPackingTag] = useState<string | null>(null)
+  const [loadingPackingModal, setLoadingPackingModal] = useState(false)
+
+  const handleCopyPackingTag = (tag: string) => {
+    navigator.clipboard.writeText(tag)
+    setCopiedPackingTag(tag)
+    setTimeout(() => setCopiedPackingTag(null), 2000)
+  }
+
+  const allOrderIndividualPallets = useMemo(() => {
+    if (!orderPackingModal) return []
+    const list: Array<{
+      correlativo: number
+      uid_tag: string
+      sku: string
+      nombre: string
+      tipo: 'COMPLETO' | 'PUCHO' | 'RESERVA_EXCEDENTE'
+      cajas: number
+      unidades: number
+    }> = []
+
+    let idx = 1
+    for (const prod of orderPackingModal.productos) {
+      for (const pal of prod.paletas) {
+        list.push({
+          correlativo: idx++,
+          uid_tag: pal.uid_tag,
+          sku: prod.sku,
+          nombre: prod.nombre,
+          tipo: pal.tipo,
+          cajas: pal.cajas,
+          unidades: pal.unidades
+        })
+      }
+    }
+
+    for (const res of orderPackingModal.etiquetas_reserva) {
+      list.push({
+        correlativo: idx++,
+        uid_tag: res.uid_tag,
+        sku: 'RESERVA',
+        nombre: 'Tag de contingencia para excedentes en muelle',
+        tipo: 'RESERVA_EXCEDENTE',
+        cajas: 0,
+        unidades: 0
+      })
+    }
+
+    return list
+  }, [orderPackingModal])
+
+  const handleOpenOrderPacking = async (order: ImportOrder) => {
+    setLoadingPackingModal(true)
+    try {
+      const plan = await packingListService.generateOrderPackingPlan(
+        order,
+        selectedWarehouse?.prefijo_rfid || 'IMP'
+      )
+      setOrderPackingModal(plan)
+    } catch (err: any) {
+      setErrorMsg(`Error al generar el plan de paletizado: ${err.message}`)
+    } finally {
+      setLoadingPackingModal(false)
+    }
+  }
+
   // Carga inicial de datos
   const loadInitialData = async () => {
     setLoading(true)
@@ -162,6 +232,73 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
     if (!selectedOrder || !selectedProduct) return null
     return selectedOrder.detalles?.find((d) => d.id_producto === selectedProduct.id_producto) || null
   }, [selectedOrder, selectedProduct])
+
+  // Progreso en vivo de cada producto de la orden seleccionada (avance de escaneo y faltantes)
+  const orderProductsProgress = useMemo(() => {
+    if (!selectedOrder || !selectedOrder.detalles) return []
+
+    return selectedOrder.detalles.map((det) => {
+      const prod = products.find((p) => p.id_producto === det.id_producto)
+      const cantPedida = Number(det.cantidad_pedida) || 0
+      const unidCaja = prod?.unidades_por_caja || 1
+      const cajasPal = prod?.cajas_por_paleta || 1
+      const unidPal = unidCaja * cajasPal
+      const paletasPactadas = Math.ceil(cantPedida / unidPal)
+
+      // Filtrar lecturas de la sesión activa para este producto
+      const prodItems = scannedItems.filter(
+        (it) => it.id_producto === det.id_producto || (!it.id_producto && Number(selectedProductId) === det.id_producto)
+      )
+
+      let paletasLeidas = 0
+      let puchosLeidos = 0
+      if (prod?.modo_manejo === 'SERIALIZADO') {
+        paletasLeidas = prodItems.length
+      } else {
+        for (const item of prodItems) {
+          if (item.tipo === 'COMPLETO') {
+            paletasLeidas += 1
+          } else {
+            puchosLeidos += item.cantidad_paquetes
+          }
+        }
+      }
+
+      const unidadesLeidas =
+        prod?.modo_manejo === 'SERIALIZADO'
+          ? paletasLeidas
+          : (paletasLeidas * cajasPal + puchosLeidos) * unidCaja
+
+      const porcentaje = cantPedida > 0 ? Math.min(100, Math.round((unidadesLeidas / cantPedida) * 100)) : 0
+      const faltantes = Math.max(0, cantPedida - unidadesLeidas)
+
+      let estado: 'PENDIENTE' | 'EN_PROCESO' | 'COMPLETO' | 'SOBRANTE' = 'PENDIENTE'
+      if (unidadesLeidas > cantPedida) {
+        estado = 'SOBRANTE'
+      } else if (unidadesLeidas === cantPedida) {
+        estado = 'COMPLETO'
+      } else if (unidadesLeidas > 0) {
+        estado = 'EN_PROCESO'
+      }
+
+      return {
+        id_producto: det.id_producto,
+        sku: det.producto?.sku || prod?.sku || `SKU-${det.id_producto}`,
+        nombre: det.producto?.nombre || prod?.nombre || 'Producto',
+        modo_manejo: prod?.modo_manejo || 'PALETIZADO',
+        cantPedida,
+        paletasPactadas,
+        unidCaja,
+        cajasPal,
+        paletasLeidas,
+        puchosLeidos,
+        unidadesLeidas,
+        porcentaje,
+        faltantes,
+        estado
+      }
+    })
+  }, [selectedOrder, products, scannedItems, selectedProductId])
 
   // Cálculos en tiempo real de la sesión activa
   const sessionSummary = useMemo(() => {
@@ -289,7 +426,8 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
         uid: cleanUid,
         tipo: 'COMPLETO',
         cantidad_paquetes: 1,
-        numero_serie: cleanSerie
+        numero_serie: cleanSerie,
+        id_producto: selectedProduct.id_producto
       }
 
       const updatedItems = [item, ...scannedItems]
@@ -309,7 +447,8 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
     const item: ReceptionReadingItem = {
       uid: cleanUid,
       tipo: scanType,
-      cantidad_paquetes: scanType === 'COMPLETO' ? selectedProduct.cajas_por_paleta : Math.max(1, puchoBoxes)
+      cantidad_paquetes: scanType === 'COMPLETO' ? selectedProduct.cajas_por_paleta : Math.max(1, puchoBoxes),
+      id_producto: selectedProduct.id_producto
     }
 
     const updatedItems = [item, ...scannedItems]
@@ -944,6 +1083,88 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                 </div>
               )}
 
+              {/* Tabla de avance y productos pactados de la orden en el contenedor */}
+              {selectedOrder && orderProductsProgress.length > 0 && (
+                <div style={{ marginTop: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                      Productos y paletas esperadas en la orden ({orderProductsProgress.length}):
+                    </span>
+                    <button
+                      type="button"
+                      className="button secondary button-sm"
+                      onClick={() => handleOpenOrderPacking(selectedOrder)}
+                      disabled={loadingPackingModal}
+                    >
+                      📦 Ver rótulos / Packing List
+                    </button>
+                  </div>
+
+                  <div className="table-wrap" style={{ margin: 0, maxHeight: '200px', overflowY: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>SKU</th>
+                          <th>Producto</th>
+                          <th style={{ textAlign: 'right' }}>Pactado</th>
+                          <th style={{ textAlign: 'right' }}>Empaque</th>
+                          <th style={{ textAlign: 'center' }}>Paletas esperadas</th>
+                          <th style={{ textAlign: 'center' }}>Seleccionar</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderProductsProgress.map((item) => (
+                          <tr
+                            key={item.id_producto}
+                            style={{
+                              backgroundColor: Number(selectedProductId) === item.id_producto ? 'var(--color-brand-soft)' : undefined
+                            }}
+                          >
+                            <td>
+                              <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                                {item.sku}
+                              </code>
+                            </td>
+                            <td>
+                              <strong style={{ color: 'var(--color-text-primary)' }}>{item.nombre}</strong>
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                              {item.cantPedida.toLocaleString('es-PE')} unid
+                            </td>
+                            <td style={{ textAlign: 'right', fontSize: '12px' }}>
+                              {item.cajasPal} caj/pal × {item.unidCaja} unid
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span
+                                style={{
+                                  background: 'var(--color-brand-soft)',
+                                  color: 'var(--color-brand-deep)',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                  fontSize: '12px'
+                                }}
+                              >
+                                {item.paletasPactadas} paleta(s)
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="button secondary button-sm"
+                                onClick={() => setSelectedProductId(String(item.id_producto))}
+                              >
+                                {Number(selectedProductId) === item.id_producto ? '✓ Activo' : 'Elegir'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
                 <button
                   type="button"
@@ -1334,6 +1555,164 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                   </div>
                 )}
               </div>
+
+              {/* Tabla de Avance y Estado de Todos los Productos de la Orden en Tiempo Real */}
+              {selectedOrder && orderProductsProgress.length > 0 && (
+                <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <div>
+                      <h3 className="section-title" style={{ margin: 0, fontSize: '16px', color: 'var(--color-brand-deep)' }}>
+                        Avance general de la orden — {selectedOrder.numero_orden} ({selectedOrder.tipo_contenedor || '40FT'})
+                      </h3>
+                      <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '13px' }}>
+                        Recuento en tiempo real: unidades ingresadas, paletas escaneadas y faltantes por producto.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button secondary button-sm"
+                      onClick={() => handleOpenOrderPacking(selectedOrder)}
+                      disabled={loadingPackingModal}
+                    >
+                      📦 Ver rótulos / Packing List
+                    </button>
+                  </div>
+
+                  <div className="table-wrap" style={{ margin: 0 }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>SKU</th>
+                          <th>Producto</th>
+                          <th style={{ textAlign: 'right' }}>Pactado</th>
+                          <th style={{ textAlign: 'right' }}>Ingresado</th>
+                          <th style={{ textAlign: 'right' }}>Falta</th>
+                          <th style={{ width: '160px' }}>Progreso</th>
+                          <th style={{ textAlign: 'center' }}>Estado</th>
+                          <th style={{ textAlign: 'center' }}>Acción</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orderProductsProgress.map((item) => {
+                          const isCurrent = Number(selectedProductId) === item.id_producto
+
+                          return (
+                            <tr
+                              key={item.id_producto}
+                              style={{
+                                backgroundColor: isCurrent ? 'var(--color-brand-soft)' : undefined
+                              }}
+                            >
+                              <td>
+                                <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                                  {item.sku}
+                                </code>
+                              </td>
+                              <td>
+                                <strong style={{ color: 'var(--color-text-primary)' }}>{item.nombre}</strong>
+                              </td>
+                              <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                                {item.cantPedida.toLocaleString('es-PE')} unid
+                                <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                                  {item.paletasPactadas} paleta(s)
+                                </div>
+                              </td>
+                              <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-brand)' }}>
+                                {item.unidadesLeidas.toLocaleString('es-PE')} unid
+                                <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                                  {item.paletasLeidas} comp.{item.puchosLeidos > 0 ? ` + ${item.puchosLeidos} pucho` : ''}
+                                </div>
+                              </td>
+                              <td style={{ textAlign: 'right', fontWeight: 600, color: item.faltantes > 0 ? 'var(--color-warning)' : 'var(--color-success)' }}>
+                                {item.faltantes > 0 ? `${item.faltantes.toLocaleString('es-PE')} unid` : 'Completo'}
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <div
+                                    style={{
+                                      flex: 1,
+                                      height: '8px',
+                                      backgroundColor: 'var(--color-border)',
+                                      borderRadius: '4px',
+                                      overflow: 'hidden'
+                                    }}
+                                  >
+                                    <div
+                                      style={{
+                                        width: `${item.porcentaje}%`,
+                                        height: '100%',
+                                        backgroundColor:
+                                          item.estado === 'SOBRANTE'
+                                            ? 'var(--color-warning)'
+                                            : item.estado === 'COMPLETO'
+                                            ? 'var(--color-success)'
+                                            : 'var(--color-brand)'
+                                      }}
+                                    />
+                                  </div>
+                                  <span style={{ fontSize: '12px', fontWeight: 600, width: '38px', textAlign: 'right' }}>
+                                    {item.porcentaje}%
+                                  </span>
+                                </div>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span
+                                  style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    border: '1px solid var(--color-border)',
+                                    background:
+                                      item.estado === 'COMPLETO'
+                                        ? '#EAF5ED'
+                                        : item.estado === 'SOBRANTE'
+                                        ? '#FFF8EE'
+                                        : item.estado === 'EN_PROCESO'
+                                        ? 'var(--color-brand-soft)'
+                                        : 'var(--color-canvas)',
+                                    color:
+                                      item.estado === 'COMPLETO'
+                                        ? 'var(--color-success)'
+                                        : item.estado === 'SOBRANTE'
+                                        ? 'var(--color-warning)'
+                                        : item.estado === 'EN_PROCESO'
+                                        ? 'var(--color-brand-deep)'
+                                        : 'var(--color-text-secondary)'
+                                  }}
+                                >
+                                  {item.estado === 'COMPLETO'
+                                    ? 'Completo'
+                                    : item.estado === 'SOBRANTE'
+                                    ? 'Sobrante'
+                                    : item.estado === 'EN_PROCESO'
+                                    ? 'En proceso'
+                                    : 'Pendiente'}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                {isCurrent ? (
+                                  <span style={{ fontSize: '12px', color: 'var(--color-brand)', fontWeight: 600 }}>
+                                    Activo
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="button secondary button-sm"
+                                    onClick={() => setSelectedProductId(String(item.id_producto))}
+                                  >
+                                    Escanear
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1596,19 +1975,30 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                         </span>
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          className="button primary button-sm"
-                          onClick={() => {
-                            setSelectedOrderId(String(ord.id_orden))
-                            if (ord.detalles && ord.detalles.length > 0) {
-                              setSelectedProductId(String(ord.detalles[0].id_producto))
-                            }
-                            setActiveTab('operar')
-                          }}
-                        >
-                          Recepcionar
-                        </button>
+                        <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            className="button secondary button-sm"
+                            onClick={() => handleOpenOrderPacking(ord)}
+                            disabled={loadingPackingModal}
+                            title="Ver desglose de paletas esperadas y descargar rótulos Excel para el muelle"
+                          >
+                            📦 Packing / Rótulos
+                          </button>
+                          <button
+                            type="button"
+                            className="button primary button-sm"
+                            onClick={() => {
+                              setSelectedOrderId(String(ord.id_orden))
+                              if (ord.detalles && ord.detalles.length > 0) {
+                                setSelectedProductId(String(ord.detalles[0].id_producto))
+                              }
+                              setActiveTab('operar')
+                            }}
+                          >
+                            Recepcionar
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1976,6 +2366,377 @@ export function ReceptionsPage({ onBack, onNavigateToInventory }: Props) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 8. MODAL: Plan de Paletizado y Rótulos de Muelle (Packing List) */}
+      {orderPackingModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card" style={{ maxWidth: '880px', width: '92%' }}>
+            <div className="modal-header">
+              <div>
+                <span
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--color-brand)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px'
+                  }}
+                >
+                  Plan de Paletizado y Packing List
+                </span>
+                <h2
+                  className="modal-title"
+                  style={{ margin: '2px 0 0 0', fontSize: '20px', color: 'var(--color-brand-deep)' }}
+                >
+                  Packing List — Orden {orderPackingModal.numero_orden}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setOrderPackingModal(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="muted" style={{ margin: '0 0 16px 0', fontSize: '13px' }}>
+              Desglose físico calculado según las reglas de empaque. Cada paleta cuenta con su código correlativo reservado con el prefijo <strong>{orderPackingModal.prefijo_almacen}</strong>, listo para descarga y etiquetado en muelle.
+            </p>
+
+            {/* Tira de Métricas del Contenedor */}
+            <div className="indicator-strip" style={{ marginBottom: '16px' }}>
+              <div className="indicator-card">
+                <span className="indicator-label">Unidades totales</span>
+                <span className="indicator-value">{orderPackingModal.total_unidades.toLocaleString('es-PE')}</span>
+                <span className="indicator-context">Contenedor {orderPackingModal.contenedor}</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Cajas totales</span>
+                <span className="indicator-value">{orderPackingModal.total_cajas.toLocaleString('es-PE')}</span>
+                <span className="indicator-context">En todo el embarque</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Paletas completas</span>
+                <span className="indicator-value" style={{ color: 'var(--color-brand)' }}>
+                  {orderPackingModal.total_paletas_completas}
+                </span>
+                <span className="indicator-context">Carga estándar homogénea</span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Cajas pucho / parciales</span>
+                <span className="indicator-value" style={{ color: orderPackingModal.total_puchos > 0 ? 'var(--color-warning)' : 'inherit' }}>
+                  {orderPackingModal.total_puchos}
+                </span>
+                <span className="indicator-context">
+                  {orderPackingModal.total_puchos > 0 ? 'Paleta con cajas sueltas' : 'Sin sobrantes sueltos'}
+                </span>
+              </div>
+              <div className="indicator-card">
+                <span className="indicator-label">Total bultos esperados</span>
+                <span className="indicator-value" style={{ color: 'var(--color-success)' }}>
+                  {orderPackingModal.total_bultos_previstos}
+                </span>
+                <span className="indicator-context">+5 tags reserva muelle</span>
+              </div>
+            </div>
+
+            {/* Pestañas de Vista: Resumen vs Lista Completa de Etiquetas */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  className={`button ${orderPackingTab === 'summary' ? 'primary' : 'secondary'} button-sm`}
+                  onClick={() => setOrderPackingTab('summary')}
+                >
+                  Resumen por producto ({orderPackingModal.productos.length})
+                </button>
+                <button
+                  type="button"
+                  className={`button ${orderPackingTab === 'tags' ? 'primary' : 'secondary'} button-sm`}
+                  onClick={() => setOrderPackingTab('tags')}
+                >
+                  🏷️ Lista completa de códigos separados ({allOrderIndividualPallets.length})
+                </button>
+              </div>
+              {copiedPackingTag && (
+                <span style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600 }}>
+                  ✓ Código {copiedPackingTag} copiado al portapapeles
+                </span>
+              )}
+            </div>
+
+            {/* Vista 1: Resumen por Producto */}
+            {orderPackingTab === 'summary' && (
+              <div className="table-wrap" style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '14px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Producto</th>
+                      <th style={{ textAlign: 'right' }}>Cantidad</th>
+                      <th style={{ textAlign: 'right' }}>Unid/Caja</th>
+                      <th style={{ textAlign: 'right' }}>Cajas/Paleta</th>
+                      <th style={{ textAlign: 'center' }}>Paletas completas</th>
+                      <th style={{ textAlign: 'center' }}>Cajas pucho</th>
+                      <th>Códigos asignados</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderPackingModal.productos.map((prod) => {
+                      const completasTags = prod.paletas.filter((p) => p.tipo === 'COMPLETO').map((p) => p.uid_tag)
+                      const puchoTag = prod.paletas.find((p) => p.tipo === 'PUCHO')?.uid_tag
+
+                      return (
+                        <tr key={prod.id_producto}>
+                          <td>
+                            <code style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                              {prod.sku}
+                            </code>
+                          </td>
+                          <td>
+                            <strong style={{ color: 'var(--color-text-primary)' }}>{prod.nombre}</strong>
+                          </td>
+                          <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                            {prod.cantidad_pedida.toLocaleString('es-PE')}
+                          </td>
+                          <td style={{ textAlign: 'right' }}>{prod.unidades_por_caja}</td>
+                          <td style={{ textAlign: 'right' }}>{prod.cajas_por_paleta}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span
+                              style={{
+                                background: 'var(--color-brand-soft)',
+                                color: 'var(--color-brand-deep)',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                fontWeight: 600,
+                                fontSize: '12px'
+                              }}
+                            >
+                              {prod.paletas_completas} paleta(s)
+                            </span>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            {prod.cajas_pucho > 0 ? (
+                              <span
+                                style={{
+                                  background: '#FFF8EE',
+                                  color: 'var(--color-warning)',
+                                  border: '1px solid #F5D399',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                  fontSize: '12px'
+                                }}
+                              >
+                                {prod.cajas_pucho} caja(s)
+                              </span>
+                            ) : (
+                              <span className="muted" style={{ fontSize: '12px' }}>0</span>
+                            )}
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', maxHeight: '70px', overflowY: 'auto' }}>
+                              {completasTags.map((t) => (
+                                <code
+                                  key={t}
+                                  onClick={() => handleCopyPackingTag(t)}
+                                  style={{
+                                    background: 'var(--color-canvas)',
+                                    border: '1px solid var(--color-border)',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Clic para copiar código"
+                                >
+                                  {t}
+                                </code>
+                              ))}
+                              {puchoTag && (
+                                <code
+                                  key={puchoTag}
+                                  onClick={() => handleCopyPackingTag(puchoTag)}
+                                  style={{
+                                    background: '#FFF8EE',
+                                    border: '1px solid #F5D399',
+                                    color: 'var(--color-warning)',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Código reservado para paleta pucho (Clic para copiar)"
+                                >
+                                  {puchoTag} (P)
+                                </code>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Vista 2: Lista Detallada de Códigos y Paletas Separadas */}
+            {orderPackingTab === 'tags' && (
+              <div className="table-wrap" style={{ maxHeight: '320px', overflowY: 'auto', marginBottom: '14px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={{ width: '40px', textAlign: 'center' }}>#</th>
+                      <th>Código / Tag RFID</th>
+                      <th>Tipo de paleta</th>
+                      <th>SKU</th>
+                      <th>Producto</th>
+                      <th style={{ textAlign: 'right' }}>Cajas</th>
+                      <th style={{ textAlign: 'right' }}>Unidades</th>
+                      <th style={{ textAlign: 'center', width: '90px' }}>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allOrderIndividualPallets.map((item) => (
+                      <tr key={item.uid_tag + '-' + item.correlativo}>
+                        <td style={{ textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '12px' }}>
+                          {item.correlativo}
+                        </td>
+                        <td>
+                          <code
+                            style={{
+                              fontSize: '12px',
+                              fontWeight: 700,
+                              color: item.tipo === 'PUCHO' ? 'var(--color-warning)' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-text-secondary)' : 'var(--color-brand)',
+                              background: item.tipo === 'PUCHO' ? '#FFF8EE' : item.tipo === 'RESERVA_EXCEDENTE' ? 'var(--color-canvas)' : 'var(--color-brand-soft)',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              border: item.tipo === 'RESERVA_EXCEDENTE' ? '1px dashed var(--color-border)' : '1px solid transparent'
+                            }}
+                          >
+                            {item.uid_tag}
+                          </code>
+                        </td>
+                        <td>
+                          {item.tipo === 'COMPLETO' && (
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-brand-deep)' }}>
+                              Paleta estándar completa
+                            </span>
+                          )}
+                          {item.tipo === 'PUCHO' && (
+                            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-warning)' }}>
+                              Pucho (Cajas sueltas)
+                            </span>
+                          )}
+                          {item.tipo === 'RESERVA_EXCEDENTE' && (
+                            <span style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-secondary)' }}>
+                              Reserva muelle (Excedente)
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <code style={{ fontSize: '11px', color: 'var(--color-brand-deep)' }}>{item.sku}</code>
+                        </td>
+                        <td>
+                          <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--color-text-primary)' }}>
+                            {item.nombre}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {item.cajas > 0 ? item.cajas.toLocaleString('es-PE') : '—'}
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                          {item.unidades > 0 ? item.unidades.toLocaleString('es-PE') : '—'}
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            type="button"
+                            className="button secondary button-sm"
+                            style={{ padding: '2px 8px', fontSize: '11px' }}
+                            onClick={() => handleCopyPackingTag(item.uid_tag)}
+                          >
+                            {copiedPackingTag === item.uid_tag ? '✓ Copiado' : 'Copiar'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Banner de Códigos de Contingencia para Excedentes */}
+            <div
+              style={{
+                backgroundColor: 'var(--color-canvas)',
+                border: '1px solid var(--color-border)',
+                borderRadius: '6px',
+                padding: '12px 16px',
+                marginBottom: '16px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '10px'
+              }}
+            >
+              <div>
+                <strong style={{ fontSize: '13px', color: 'var(--color-brand-deep)' }}>
+                  Etiquetas de contingencia / reserva para excedentes:
+                </strong>
+                <p className="muted" style={{ margin: '2px 0 0 0', fontSize: '12px' }}>
+                  Si el contenedor trae paletas o cajas adicionales no contempladas, utiliza estos códigos pre-impresos para registrar el excedente sin detener la descarga.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {orderPackingModal.etiquetas_reserva.map((r) => (
+                  <code
+                    key={r.uid_tag}
+                    style={{
+                      background: 'var(--color-surface)',
+                      border: '1px dashed var(--color-border)',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      color: 'var(--color-brand)'
+                    }}
+                  >
+                    {r.uid_tag}
+                  </code>
+                ))}
+              </div>
+            </div>
+
+            {/* Acciones del Modal */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <span className="muted" style={{ fontSize: '12px' }}>
+                El archivo descargable contiene 2 hojas: Resumen técnico y Rótulos con casillas de verificación para el operario.
+              </span>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setOrderPackingModal(null)}
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="button"
+                  className="button primary"
+                  onClick={() => packingListService.exportPackingListToExcel(orderPackingModal)}
+                >
+                  Descargar Excel para muelle (.xlsx)
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
